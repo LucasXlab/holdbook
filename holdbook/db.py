@@ -122,14 +122,19 @@ def init_db(cfg: Config) -> bool:
 
     existed = cfg.db_path.exists()
     if existed:
+        conn = None
         try:
             conn = sqlite3.connect(cfg.db_path)
             _check_schema(conn)
             conn.close()
             return False
         except HoldbookError:
+            if conn is not None:
+                conn.close()
             raise
         except sqlite3.DatabaseError as exc:
+            if conn is not None:
+                conn.close()
             raise err("db_corrupt", f"数据库无法打开：{exc}", 1)
 
     try:
@@ -150,6 +155,7 @@ def init_db(cfg: Config) -> bool:
 def connect(cfg: Config) -> sqlite3.Connection:
     if not cfg.db_path.exists():
         raise err("no_data", "还没有数据库：先运行 holdbook init", 1)
+    conn = None
     try:
         conn = sqlite3.connect(cfg.db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
@@ -159,8 +165,12 @@ def connect(cfg: Config) -> sqlite3.Connection:
         _check_schema(conn)
         return conn
     except HoldbookError:
+        if conn is not None:
+            conn.close()
         raise
     except sqlite3.DatabaseError as exc:
+        if conn is not None:
+            conn.close()
         raise err("db_corrupt", f"数据库无法打开：{exc}", 1)
 
 

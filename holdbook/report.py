@@ -321,7 +321,7 @@ tr.total td{border-top:1px solid var(--border-strong);font-weight:600}
 .fee{border:1px solid var(--border);border-radius:6px;padding:10px}
 .fee .k{font-size:11px;color:var(--text-muted)}.fee .v{font-weight:600}
 .footer{margin-top:28px;color:var(--text-faint);font-size:11px;line-height:18px;border-top:1px solid var(--border);padding-top:12px}
-.warn{color:#a16207;font-size:12px;margin-top:8px}
+.warn{color:var(--text-muted);font-size:12px;margin-top:8px}
 @media(max-width:600px){.wrap{padding:20px 16px 36px}.summary,.secondary,.fees{grid-template-columns:repeat(2,1fr)}.metric .value{font-size:20px;line-height:28px}table,tbody,tr,td{display:block;width:100%}thead{display:none}tr{border-bottom:1px solid var(--border);padding:8px 0}td{border:0;padding:2px 0;white-space:normal}td.num{text-align:left}td[data-label]::before{content:attr(data-label) " ";color:var(--text-faint);font-size:11px}}
 """
 
@@ -344,12 +344,16 @@ def html_report(d: dict) -> str:
         cls = "neg" if (p["unrealizedPnl"] is not None and p["unrealizedPnl"] < 0) else ("pos" if p["unrealizedPnl"] else "")
         w = (p["weight"] * 100) if p["weight"] is not None else 0
         rows.append(
-            f"<tr><td>{esc(p['code'])}</td><td>{esc(p['name'])}</td><td class=\"num\">{qv(p['quantity'])}</td>"
-            f"<td class=\"num\">{m(p['avgCost'])}</td><td class=\"num\">{m(p['price'])}</td><td class=\"num\">{m(p['marketValue'])}</td>"
-            f"<td class=\"num\"><span class=\"bar\" style=\"width:{w:.1f}%\"></span>{pct(p['weight'])}</td>"
-            f"<td class=\"num {cls}\">{m(p['unrealizedPnl'])}</td><td class=\"num {cls}\">{pct(p['unrealizedPct'])}</td></tr>"
+            f"<tr><td data-label=\"代码\">{esc(p['code'])}</td><td data-label=\"名称\">{esc(p['name'])}</td>"
+            f"<td data-label=\"数量\" class=\"num\">{qv(p['quantity'])}</td>"
+            f"<td data-label=\"成本价\" class=\"num\">{m(p['avgCost'])}</td><td data-label=\"现价\" class=\"num\">{m(p['price'])}</td>"
+            f"<td data-label=\"市值\" class=\"num\">{m(p['marketValue'])}</td>"
+            f"<td data-label=\"占比\" class=\"num\"><span class=\"bar\" style=\"width:{w:.1f}%\"></span>{pct(p['weight'])}</td>"
+            f"<td data-label=\"浮动盈亏\" class=\"num {cls}\">{m(p['unrealizedPnl'])}</td>"
+            f"<td data-label=\"收益率\" class=\"num {cls}\">{pct(p['unrealizedPct'])}</td></tr>"
         )
     total_cls = "neg" if s["unrealizedPnl"] < 0 else "pos"
+    total_weight = sum((p["weight"] for p in d["positions"] if p["weight"] is not None), D(0))
     warnings_html = "".join(f"<div class=\"warn\">{esc(w['message'])}</div>" for w in d["warnings"])
     sources_html = "".join(f"<li>{esc(x['file'])}（{x['rows']} 行）</li>" for x in d["sources"])
     fetched = f" · 行情抓取 {esc(d['marketFetchedAt'])}" if d.get("marketFetchedAt") else ""
@@ -372,7 +376,7 @@ def html_report(d: dict) -> str:
 </section>
 <h2>持仓</h2>
 <table><thead><tr><th>代码</th><th>名称</th><th class="num">数量</th><th class="num">成本价</th><th class="num">现价</th><th class="num">市值</th><th class="num">占比</th><th class="num">浮动盈亏</th><th class="num">收益率</th></tr></thead>
-<tbody>{''.join(rows)}<tr class="total"><td colspan="5">合计</td><td class="num">{m(s['marketValue'])}</td><td class="num">100.00%</td><td class="num {total_cls}">{m(s['unrealizedPnl'])}</td><td class="num {total_cls}">{pct(s['unrealizedPct'])}</td></tr></tbody></table>
+<tbody>{''.join(rows)}<tr class="total"><td colspan="5">合计</td><td class="num">{m(s['marketValue'])}</td><td class="num">{pct(total_weight)}</td><td class="num {total_cls}">{m(s['unrealizedPnl'])}</td><td class="num {total_cls}">{pct(s['unrealizedPct'])}</td></tr></tbody></table>
 <div class="caption">{top}</div>
 {warnings_html}
 <h2>费用</h2><div class="fees">

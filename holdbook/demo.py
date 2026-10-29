@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .config import Config, load_config
 from .csvio import parse_snapshots, parse_trades
-from .db import (connect, ensure_account, init_db, insert_tx, transaction,
+from .db import (connect, ensure_account, init_db, insert_import, insert_tx, transaction,
                  upsert_instrument, upsert_snapshot)
 from .errors import err
 from .reconcile import check_account
@@ -54,6 +54,7 @@ def run_demo(path: Path, out, cfg: Config) -> int:
             for tx in parsed.txs:
                 upsert_instrument(conn, tx.code, tx.name, _board(tx.code), dcfg.now_iso())
                 insert_tx(conn, account_id, tx, dcfg.now_iso())
+            insert_import(conn, "华泰", trades.name, dcfg.now_iso(), len(parsed.txs), len(parsed.txs), 0, 0, "ok")
             ps = parse_snapshots(snap, dcfg)
             for s in ps.rows:
                 upsert_instrument(conn, s.code, s.name or s.code, _board(s.code), dcfg.now_iso())

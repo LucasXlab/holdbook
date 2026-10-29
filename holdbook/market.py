@@ -9,7 +9,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from .config import Config
-from .db import price_get, price_put
+from .db import price_get, price_put, upsert_instrument
 from .errors import err
 from .models import D
 
@@ -26,6 +26,14 @@ MOCK = {
 
 TOTAL_CAP = 30.0
 BATCH = 60
+
+
+def _board(code: str) -> str:
+    from .csvio import normalize_code
+    try:
+        return normalize_code(code)[1]
+    except ValueError:
+        return "unknown"
 
 
 def qt_code(code: str) -> str:
@@ -135,6 +143,8 @@ def load_prices(conn, cfg: Config, codes: list[str], as_of: date, mode: str,
         live_at = result.fetched_at
         for code, (name, price) in result.quotes.items():
             prices[code] = price
+            board = _board(code)
+            upsert_instrument(conn, code, name or code, board, cfg.now_iso())
             price_put(conn, code, as_of, price, "live", cfg.now_iso())
         failures.update(result.failures)
         for code, msg in result.failures.items():
@@ -145,6 +155,7 @@ def load_prices(conn, cfg: Config, codes: list[str], as_of: date, mode: str,
             if code in MOCK:
                 name, price = MOCK[code]
                 prices[code] = price
+                upsert_instrument(conn, code, name, _board(code), cfg.now_iso())
                 price_put(conn, code, as_of, price, "mock", cfg.now_iso())
         for code in codes:
             if code not in prices:

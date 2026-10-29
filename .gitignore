@@ -13,3 +13,6 @@ holdbook-demo/
 *.db-wal
 *.db-shm
 reports/
+.coverage
+htmlcov/
+notes/local-*
