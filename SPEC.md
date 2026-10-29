@@ -179,7 +179,8 @@ SQLite 3，文件 `<data_dir>/holdbook.db`。打开时执行：
 | 2 | `红利`、`股息`、`分红`、`dividend` | `dividend` |
 | 3 | `配股`、`rights` | `rights_issue` |
 | 4 | `中签`、`新股` | `ipo_allot` |
-| 5 | `利息`、`费用`、`手续费`、`佣金`、`规费` | `fee` |
+| 5 | `费用`、`手续费`、`佣金`、`规费` | `fee` |
+| 5b | `利息` | `interest`（金额为负时按 `fee` 处理） |
 | 6 | `银证转入`、`银行转入`、`转入` | `transfer_in` |
 | 7 | `银证转出`、`银行转出`、`转出` | `transfer_out` |
 | 8 | `买入`、`证券买入`、`buy` | `buy` |
@@ -193,6 +194,7 @@ SQLite 3，文件 `<data_dir>/holdbook.db`。打开时执行：
 - `rights_issue`：`quantity` 必须 >0，`price` 为配股价，`amount=-quantity*price`；数量为 0 → `bad_row`。
 - `ipo_allot`：按 `buy` 入账，但保留 kind。
 - `fee`：`quantity=0`，`price=0`，`amount=-费用合计`，`fee_other=费用合计`，其余费用 0。
+- `interest`：利息收入，`quantity=0`，`price=0`，`amount=正数`，费用为 0；金额为负（融资利息）时按 `fee` 处理，进入费用合计。
 - `transfer_in`/`transfer_out`：只影响现金，不影响持仓；`amount` 正/负。
 - `other`：不参与账。
 
@@ -203,7 +205,7 @@ SQLite 3，文件 `<data_dir>/holdbook.db`。打开时执行：
   - `sell`：`amount = +gross`；
   - `dividend`：`amount = +现金分红`；
   - `bonus_share`：`0.00`；
-  - `fee`：`-费用合计`；
+  - `fee`：`-费用合计`；`interest`：`+利息`；
   - `transfer_in`：正数；`transfer_out`：负数；
   - `other`：`0.00`。
 - `gross = abs(quantity) * price`，保留 2 位小数。
@@ -212,7 +214,7 @@ SQLite 3，文件 `<data_dir>/holdbook.db`。打开时执行：
   - 卖出：`amount - fee_total`（正数）；
   - 分红：`amount`；
   - 费用行：`amount`（已经是负的，不再减四个费用字段，否则重复）。
-- 报告中的费用合计 = 所有行四个费用字段之和（费用行只通过 `fee_other` 计一次）。
+- 报告中的费用合计 = 截止 `as_of` 的所有行四个费用字段之和（费用行只通过 `fee_other` 计一次）；`interest` 不计入费用。
 
 #### 3.4.3 去重 `row_hash`
 
@@ -238,13 +240,14 @@ row_hash = sha256(
 | `account_id` | INTEGER | NOT NULL REFERENCES accounts(id) |
 | `as_of_date` | TEXT | NOT NULL；`YYYY-MM-DD` |
 | `code` | TEXT | NOT NULL REFERENCES instruments(code) |
+| `name` | TEXT | NOT NULL DEFAULT ''；≤ 40 字符 |
 | `quantity` | TEXT | NOT NULL；≥ 0，4 位小数 |
 | `cost_price` | TEXT | NULL 或 ≥ 0，4 位小数 |
 | `market_value` | TEXT | NULL 或 ≥ 0，2 位小数 |
 | `source_file` | TEXT | NOT NULL；basename |
 | `created_at` | TEXT | NOT NULL；UTC 时间 |
 
-唯一约束 `(account_id, as_of_date, code)`。同账户同日重新导入时按代码覆盖，并统计 `overwritten`。
+唯一约束 `(account_id, as_of_date, code)`。同账户同日重新导入时按代码覆盖，并统计 `overwritten`。写入前若代码不在 `instruments`，按 3.3.1 自动创建；快照名称非空时更新 `instruments.name`，最后写入者胜；`board` 按代码推断。
 
 ### 3.6 `prices`
 
@@ -256,6 +259,8 @@ row_hash = sha256(
 | `source` | TEXT | NOT NULL；`live` / `mock` / `manual` |
 | `fetched_at` | TEXT | NOT NULL；UTC 时间 |
 | PRIMARY KEY | | `(code, date)` |
+
+写入前若代码不在 `instruments`，按 3.3.1 自动创建，`name` 用代码；`board` 按代码推断。
 
 ### 3.7 `imports`
 
@@ -279,8 +284,8 @@ row_hash = sha256(
 ### 4.1 通用规则
 
 - 编码：`auto` 先按 UTF-8 严格解码；失败用 `gb18030`；`--encoding` 可强制 `utf-8` 或 `gb18030`。
-- 分隔符：逗号、制表符、分号；取表头行出现次数最多的；并列时逗号优先；都没有按逗号。
-- 表头：前 5 行内找第一行包含「日期」类列名的行；找不到 → 2 `missing_columns`。表头不受「以 # 开头为注释」影响。
+- 分隔符：逗号、制表符、分号。对三种分隔符各切前 5 行，选「命中日期类列名且字段数最多」的一种；并列时逗号优先；都未命中时用逗号。再用选中的分隔符确定表头。
+- 表头：前 5 行内找第一行包含该文件必需列名的行——交割单找日期列，快照找代码列，价格找 code 列；找不到 → 2 `missing_columns`。表头不受「以 # 开头为注释」影响。
 - 表头去首尾空格、全角转半角、转小写后匹配；重复表头 → 2 `duplicate_column`。
 - 数据行：空行跳过；以 `#` 开头的整行跳过；字段数少于表头补空，多于表头 → 错误行。
 - 单文件最大 `HOLDBOOK_MAX_IMPORT_BYTES`（默认 104857600 字节，即 100 MiB）；超过 → 2 `bad_csv`。行数上限 `HOLDBOOK_MAX_IMPORT_ROWS`（默认 200000，硬上限 2000000），按数据记录计；超过 → 2 `bad_csv`，整个命令不写库。检查顺序：先 `os.stat` 看字节数，再逐行读；超限时不完整解析。
@@ -310,23 +315,23 @@ row_hash = sha256(
 
 1. 日期、操作必须可解析；否则错误行。
 2. `kind` 按 3.4.1 识别。`other` 不要求代码、数量、价格、金额。
-3. 非 `other` 且非现金类（`fee`、`transfer_in`、`transfer_out`）时，代码必须能规范化；否则错误行。
-4. 现金类（`fee`、`transfer_in`、`transfer_out`）缺少代码时用 `CASH.CASH`；`other` 缺少代码时也用 `CASH.CASH`。
+3. 非 `other` 且非现金类（`fee`、`interest`、`transfer_in`、`transfer_out`）时，代码必须能规范化；否则错误行。
+4. 现金类（`fee`、`interest`、`transfer_in`、`transfer_out`）缺少代码时用 `CASH.CASH`；`other` 缺少代码时也用 `CASH.CASH`。
 5. 交易类（`buy`、`sell`、`ipo_allot`、`rights_issue`）：
-   - 数量、价格、金额至少有一个非空；否则错误行。
+   - 数量必须非空且 >0；缺数量 → 错误行。
+   - 价格和金额至少要有一个非空；两者都缺 → 错误行「缺价格和金额」。
    - 有数量和价格：`gross=abs(quantity)*price`；若金额非空且 `abs(abs(amount)-gross)>0.02` → 错误行 `bad_row`，错误里给两者。
    - 只有金额和数量：`price=abs(amount)/quantity`，保留 4 位；`gross=abs(amount)`。
    - 只有数量和价格：`gross=abs(quantity)*price`。
-   - 只有金额没有数量：错误行。
    - `quantity` 按 kind 定符号：买入类为正，卖出为负；输入负数取绝对值并警告。
    - `amount` 按 3.4.2 重新计算，忽略 CSV 的符号；若 CSV 金额与 `gross` 差 ≤0.02 视为一致。
 6. `dividend`：金额必须非空且 >0；`quantity=0`、`price=0`。
 7. `bonus_share`：数量必须非空且 >0；`price=0`、`amount=0`；四个费用必须为 0。
-8. `fee`：金额非空；费用合计 = `abs(amount)`；`fee_other` 记该值；`amount=-该值`。
+8. `fee`：金额非空且为负；费用合计 = `abs(amount)`；`fee_other` 记该值；`amount=-该值`。`interest`：金额非空且为正；`amount=该值`，费用为 0；金额为负转按 `fee` 处理。
 9. `transfer_*`：金额非空；`quantity=0`、`price=0`。
 10. 费用字段：非空则必须 ≥0，最多 2 位小数；空为 0。`fee` 行若同时给了四个费用字段，以 `abs(amount)` 覆盖 `fee_other`，其余置 0。
 11. 数量绝对值 > 1e9、价格 > 1e9、金额绝对值 > 1e12 → 错误行。
-12. 名称超过 40 字符时截断到 40 字符并告警；`note`（原始操作文本）超过 200 字符时截断到 200 字符。
+12. 名称超过 40 字符时截断到 40 字符并告警；`note`（原始操作文本）超过 200 字符时截断到 200 字符。名称非空时更新 `instruments.name`，最后写入者胜。
 13. 行级错误：跳过该行，继续解析；其他合法行仍入库；退出码 2。摘要写明 `已入库，但有 K 行未导入`。
 14. 文件级错误（编码失败、缺表头/必填列、行数超限、文件不存在）：整个命令不写库，退出码 1 或 2。
 
@@ -347,8 +352,8 @@ row_hash = sha256(
 - 数量必须 ≥0；0 表示已清仓，照常写入。
 - 成本价、市值可空；负数为错误行。
 - 同一文件同代码出现多次 → 取最后一行，stderr 警告。
-- 未来日期 → 2 `bad_date`。
-- 逐行校验与 4.2 相同：日期、代码、数量、成本价、市值、文本长度、行数上限、文件大小；错误行跳过并计入 `errors`，其他行入库，退出码 2；文件级错误不写库。
+- 快照不需要日期列；CSV 里即使有日期列也忽略其值，快照日期一律取 `--as-of`。`--as-of` 未来 → 2 `bad_date`。
+- 逐行校验：代码、数量、成本价、市值、文本长度、行数上限、文件大小；错误行跳过并计入 `errors`，其他行入库，退出码 2；文件级错误不写库。
 
 ### 4.4 手工价格 CSV（`report --prices`）
 
@@ -357,6 +362,7 @@ row_hash = sha256(
 - `code` 按 3.3.1 规范化；`close` 必须 >0 且 ≤1000000，4 位小数；`date` 缺省用报告的 `as_of`。
 - 同一文件同代码同日期重复 → 最后一行生效。
 - `date` 晚于报告 `as_of` 的行忽略并告警；`date` 早于 `as_of` 可用。
+- 代码不在 `instruments` 表（当前没有任何交易/快照引用）→ 自动创建 `instruments` 行，`name` 用代码，`board` 按 3.3.1 推断，并告警；不跳过。
 - 写入/覆盖 `prices`，`source=manual`，`fetched_at` 用当前时间。
 - 行级错误：该行跳过，其他行可用，退出码 2；文件级错误（缺列、无法解码）→ 2 `bad_csv` / `missing_columns`，报告不生成。
 
@@ -422,7 +428,8 @@ row_hash = sha256(
 
 ### 5.4 `holdbook check [--account NAME] [--as-of YYYY-MM-DD] [--strict]`
 
-- 默认每个账户用最新快照（同日期取最大 `id`）；`--account` 只查该账户，账户不存在 → 2 `unknown_account`；`--as-of` 指定日期时每个被查账户必须有该日快照，否则 2 `no_data`，错误列出账户和最近快照日期。
+- 默认每个账户用最新快照：先取 `max(as_of_date)`，同一天再取 `max(id)`；没有快照的账户跳过并在 stderr 警告，全部账户都没有快照 → 空结果、退出 0。
+- `--account` 只查该账户，账户不存在 → 2 `unknown_account`；`--as-of` 指定日期时每个被查账户必须有该日快照，否则 2 `no_data`，错误列出账户和最近快照日期。
 - 默认模式下各账户快照日期可以不同：顶层 JSON `asOf` 取这些日期的最大值，每个账户对象另给 `snapshotDate`；文本报告在每个账户标题里写自己的日期。
 - 计算见第 6.3 节。
 - 文本输出：
@@ -430,10 +437,10 @@ row_hash = sha256(
 对账: 华泰 @ 2026-10-29（快照来源 持仓_20261029.csv）
 标的 12 只，一致 9 只，差异 3 只
 
-600519.SH 贵州茅台  账上 200 股 / 快照 200 股  一致
 000001.SZ 平安银行  账上 1,000 股 / 快照 1,300 股  账上少 300 股：可能漏导入买入或送转
-                      提示: 差值正好等于 2026-06-12 送转的 300 股，可能漏导入该送转行
+                      提示: 差值正好等于 2026-09-12 送转的 300 股，可能漏导入该送转行
 510300.SH 沪深300ETF 账上 5,000 股 / 快照 5,000 股  成本价不一致：差 1.2812
+600519.SH 贵州茅台  账上 200 股 / 快照 200 股  一致
 ```
 - 有差异时最后一行：`结论: 有 3 只对不上，先按上面提示逐条核对。`
 - `--strict` 有任一 `status != matched` → 3；否则 0。
@@ -441,9 +448,9 @@ row_hash = sha256(
 ```json
 {"ok":true,"asOf":"2026-10-29","strict":false,"differed":3,
  "accounts":[{"account":"华泰","snapshot":"持仓_20261029.csv","snapshotDate":"2026-10-29","matched":9,"differed":3,
- "items":[{"code":"000001.SZ","name":"平安银行","qtyCalc":"1000.0000","qtySnapshot":"1300.0000","avgCostCalc":"11.5400","costSnapshot":"11.5400","qtyDiff":"-300.0000","costDiff":"0.0000","status":"qty_missing","hints":["差值正好等于 2026-06-12 送转的 300 股，可能漏导入该送转行"]}]}]}
+ "items":[{"code":"000001.SZ","name":"平安银行","qtyCalc":"1000.0000","qtySnapshot":"1300.0000","avgCostCalc":"11.5400","costSnapshot":"11.5400","qtyDiff":"-300.0000","costDiff":"0.0000","status":"qty_missing","hints":["差值正好等于 2026-09-12 送转的 300 股，可能漏导入该送转行"]}]}]}
 ```
-- 无账户或无快照：退出 0，文本 `还没有数据：先运行 holdbook import 和 holdbook snapshot`，JSON `{"ok":true,"asOf":"...","accounts":[],"differed":0}`。
+- 无账户或全部账户无快照：退出 0，文本 `还没有数据：先运行 holdbook import 和 holdbook snapshot`，JSON `{"ok":true,"asOf":"...","accounts":[],"differed":0}`。
 
 ### 5.5 `holdbook report [--account NAME] [--as-of YYYY-MM-DD] [--market off|live|mock] [--prices FILE] [--format text|html] [--out PATH] [--open]`
 
@@ -493,46 +500,55 @@ row_hash = sha256(
 - 输出 `holdbook 0.1.0`；JSON：`{"ok":true,"version":"0.1.0","python":"3.11.0"}`。
 - 全局 `--version` 等价于 `holdbook version`。
 
+### 5.11 `holdbook demo [--dir PATH]`
+
+- `--dir` 默认 `./holdbook-demo`；目录已存在且非空 → 2 `conflict`。
+- 生成 `data/`、示例交割单、示例快照、HTML 报告；行情固定 `mock`，不联网；示例快照故意与账本差 10 股，用来展示对账。
+- 输出 `演示数据: <dir>`、`报告: <dir>/report.html`；JSON `{"ok":true,"dir":"...","report":"..."}`。
+- 不修改用户真实数据目录；所有文件只写在 `--dir` 下。
+
 ## 6. 账本、对账与指标
 
 ### 6.1 重放顺序与状态
 
-按 `trade_date` 升序、`id` 升序重放。每个 `(account, code)` 维护：
-`qty`（Decimal 4 位）、`total_cost`（Decimal 2 位，含买入费用）、`realized`（2 位）、`dividends`（2 位）。
+按 `trade_date` 升序、`id` 升序重放。每个 `(account, code)` 内部维护：
+`qty`（Decimal，12 位）、`total_cost`（Decimal，12 位，含买入费用）、`realized`（12 位）、`dividends`（12 位）、`interest`（12 位）。内部不按 2 位落账，只在输出时量化。
 
 逐笔规则：
 
 | kind | 数量 | 成本 | 已实现/分红 |
 |---|---|---|---|
 | `buy` / `ipo_allot` | `qty += quantity` | `total_cost += gross + fees` | — |
-| `sell` | `qty -= abs(quantity)` | `cost_out = avg_cost * abs(quantity)`；`total_cost -= cost_out` | `realized += (gross - fees) - cost_out` |
+| `sell` | `qty -= abs(quantity)` | `cost_out = total_cost * abs(quantity) / qty_before`（12 位 HALF_UP）；`total_cost -= cost_out` | `realized += (gross - fees) - cost_out` |
 | `bonus_share` | `qty += quantity` | 不变 | — |
 | `rights_issue` | `qty += quantity` | `total_cost += gross + fees` | — |
 | `dividend` | 不变 | 不变 | `dividends += amount` |
+| `interest` | 不变 | 不变 | `interest += amount` |
 | `fee` | 不变 | 不变 | —（只进费用合计） |
 | `transfer_*` | 不变 | 不变 | — |
 | `other` | 不变 | 不变 | — |
 
-- `avg_cost = total_cost / qty`，qty=0 时为 `null`。
+- `avg_cost = total_cost / qty`（12 位），qty=0 时为 `null`；展示时量化 4 位。
 - 卖出数量 > 当前持仓 → 该账户账本错误：退出 2 `ledger_negative`，错误带账户、代码、日期、可卖数量。`check`/`report`/`explain` 遇到即失败。
-- 数量、成本、已实现用 Decimal 原值计算；输出时金额 2 位、数量/成本价 4 位，HALF_UP。
+- 数量、成本、已实现用 Decimal 原值计算；输出时金额 2 位、数量/成本价 4 位，HALF_UP。卖出时严禁用 4 位 `avg_cost` 反乘，必须先乘后除。
 - 清仓时 `total_cost=0`、`avg_cost=null`，`realized` 保留。
 - 交易日期晚于 `as_of` 的不参与。
 
 ### 6.1.1 精度与算例
 
-- 内部用 Decimal，保留 12 位小数；输出金额 2 位、数量/成本价 4 位，`ROUND_HALF_UP`。
+- 内部用 Decimal，所有乘除结果保留 12 位小数（`ROUND_HALF_UP`）；输出金额 2 位、数量/成本价 4 位。
 - 算例：买入 100 股 @10.00，佣金 5.00 → `gross=1000.00`，`total_cost=1005.00`，`avg_cost=10.0500`。
-- 卖出 40 股 @12.00，佣金 6.00 → `gross=480.00`，`cost_out=40×10.05=402.00`，`realized=(480-6)-402=72.00`；剩余 60 股 `total_cost=603.00`，`avg_cost=10.0500`。
+- 卖出 40 股 @12.00，佣金 6.00 → `gross=480.00`，`cost_out=1005.00×40/100=402.00`，`realized=(480-6)-402=72.00`；剩余 60 股 `total_cost=603.00`，`avg_cost=10.0500`。
 - 送转 10 股 → 70 股，`total_cost=603.00`，`avg_cost=8.6143`。
 - 再买入 60 股 @9.00，佣金 5.00 → 130 股，`total_cost=603+540+5=1148.00`，`avg_cost=8.8308`。
+- 非整除算例：买 3 股 @10.00，佣金 1.00 → `total_cost=31.00`；卖 1 股 @11.00，佣金 0 → `cost_out=31.00×1/3=10.333333333333`，`realized=11.00-10.333333333333=0.666666666667`（输出 `0.67`）；剩 2 股 `total_cost=20.666666666667`，`avg_cost=10.3333`。
 
 ### 6.2 对账范围与状态
 
 对每个被查账户、`as_of` 快照：
 - 候选代码 = 快照中的代码 ∪ 重放后 `qty != 0` 的代码。
 - 对每个代码计算 `qty_calc`、`avg_cost_calc`；快照取 `qty_snap`、`cost_snap`。
-- 记 `has_position_tx` = 该账户该代码在 `as_of` 前存在 `buy`/`sell`/`ipo_allot`/`rights_issue`/`bonus_share` 中任一笔。
+- 记 `has_position_tx` = 该账户该代码在 `trade_date <= as_of` 内存在 `buy`/`sell`/`ipo_allot`/`rights_issue`/`bonus_share` 中任一笔。
 - 状态判定按顺序：
   1. 快照无该代码、`qty_calc=0` → 不出结果；
   2. 快照无该代码、`qty_calc>0` → `only_ledger`；
@@ -542,15 +558,15 @@ row_hash = sha256(
   6. 数量相等、`cost_snap` 为空 → `no_cost`；
   7. 数量相等、`abs(avg_cost_calc - cost_snap) <= max(HOLDBOOK_COST_TOLERANCE_ABS, cost_snap * PCT / 100)` → `matched`；
   8. 否则 → `cost_off`。
-- `qtyDiff = qty_calc - qty_snap`；`costDiff = avg_cost_calc - cost_snap`（空值输出 `null`）。
+- `qtyDiff = qty_calc - qty_snap`；`costDiff = avg_cost_calc - cost_snap`（空值输出 `null`）。空值传播：快照缺失 → `qtySnapshot`/`costSnapshot`/`qtyDiff`/`costDiff` 全为 `null`；`qty_calc=0` → `avgCostCalc` 为 `null`；`cost_snap` 缺失 → `costSnapshot`/`costDiff` 为 `null`。`qtySnapshot` 存在时始终是字符串（包括 `"0.0000"`）。
 - `matched` 才计入 `matched` 数；其余计入 `differed`。`items` 按代码升序排列。
 
 ### 6.3 提示规则
 
 每个差异最多 2 条，按顺序生成，去重：
-1. `qty_missing` 且该代码在 `as_of` 前 90 天内有 `bonus_share`，且差值等于最近一次送转数量（4 位内）→ `差值正好等于 <date> 送转的 <qty> 股，可能漏导入该送转行`。
-2. `qty_missing` 且该代码在 `as_of` 前 90 天内有 `dividend` → `近期有分红，确认是否漏导入除权日之后的行`。
-3. `only_ledger` 且最后一条交易早于 `as_of` 30 天以上 → `该标的最后交易在 <date>，可能已卖出但未导入`。
+1. `qty_missing` 且该代码在 `as_of-90 <= trade_date <= as_of` 内有 `bonus_share`，且差值等于最近一次送转数量（4 位内）→ `差值正好等于 <date> 送转的 <qty> 股，可能漏导入该送转行`。
+2. `qty_missing` 且该代码在 `as_of-90 <= trade_date <= as_of` 内有 `dividend` → `近期有分红，确认是否漏导入除权日之后的行`。
+3. `only_ledger` 且 `as_of - 最后一条交易日期 >= 30` → `该标的最后交易在 <date>，可能已卖出但未导入`。
 
 ### 6.4 XIRR
 
@@ -558,15 +574,16 @@ row_hash = sha256(
   - `buy`/`ipo_allot`/`rights_issue`：`-(gross + fees)`；
   - `sell`：`gross - fees`；
   - `dividend`：`+amount`；
-  - `fee`：`-abs(amount)`；
+  - `interest`：`+amount`；
+  - `fee`：`amount`（负数，不再取绝对值）；
   - `transfer_in/out`、`bonus_share`：不计。
 - 期末价值：`as_of` 当日持仓市值；无价格的标的用 `total_cost` 替代。若期末价值为 0 且没有正现金流 → 无解。
-- 有正有负才求解。`t=(date - first_date).days / 365`，`NPV(r)=sum(cf / (1+r)^t)`。先在 `[-0.9999, 10]` 以 0.01 步长找变号区间，再在区间内二分，最多 200 次；收敛条件 `abs(NPV) < 1e-6 * sum(abs(cf))`。多个变号区间时取 `r` 最小且 `NPV` 变号的那个；找不到 → 无解。
-- 输出 6 位小数比率（`0.123456` 表示 12.3456%）；无解输出 `null`，原因写在 `xirrReason`。
+- 范围 = 报告范围（默认所有账户合并；`--account` 时只算该账户）。有正有负才求解。`t=(date - first_date).days / 365`，`NPV(r)=sum(cf / (1+r)^t)`。先在 `[-0.9999, 10]` 以 0.01 步长找变号区间，再在区间内二分，最多 200 次；收敛条件 `abs(NPV) < 1e-6 * sum(abs(cf))`。200 次后仍未达标 → 返回区间中点并把原因记为 `iterations_exceeded`。多个变号区间时取 `r` 最小且 `NPV` 变号的那个；找不到 → 无解。
+- 输出 6 位小数比率（`0.123456` 表示 12.3456%）；无解输出 `null`，原因写在 `xirrReason`。`xirrReason` 只取：`no_cashflow`、`single_direction`、`no_sign_change`、`iterations_exceeded`、`null`。
 
 ### 6.5 报告指标
 
-- 持仓：所有被查账户按代码合并后 `qty > 0` 的代码；名称取最近一笔交易的名称；成本 = 各账户 `total_cost` 之和；市值 = `qty * price`（无价为空）；占比 = 市值 / 已定价总市值（分母 0 时为 null）。
+- 持仓：所有被查账户按代码合并后 `qty > 0` 的代码；名称取 `instruments.name`（import/snapshot 见到非空名称就更新，最后写入者胜）；成本 = 各账户 `total_cost` 之和；市值 = `qty * price`（无价为空）；占比 = 市值 / 已定价总市值（分母 0 时为 null）。
 - `--account` 指定时只合并该账户；不指定时合并全部账户。
 - 汇总：
   - `marketValue` = 已定价持仓市值之和；
@@ -575,16 +592,20 @@ row_hash = sha256(
   - `unrealizedPct` = `unrealizedPnl / 已定价持仓成本`；分母 0 时为 null；
   - `realizedPnl` = 所有已实现之和；
   - `dividends` = 所有分红之和；
-  - `fees` = 四个费用字段总和，分项也输出；
+  - `interest` = 所有利息收入之和；
+  - `fees` = 截止 `as_of` 的四个费用字段总和，分项也输出；
   - `xirr` 见 6.4；
   - `priced` / `unpriced` 数量。
 - 集中度：`top3`、`top5` = 按市值降序前 3/5 的占比之和；已定价总市值为 0 时为 null。
-- `tradeStats.total` 是截止日前的全部交易笔数；`buy`/`sell` 只数 `buy` 和 `sell`（`ipo_allot`/`rights_issue` 不计入）；`turnover` = 买入 gross + 卖出 gross。
+- 所有汇总只统计 `trade_date <= as_of` 的行。
+- `tradeStats.total` 是截止日前的全部交易笔数（含 `fee`/`interest`/`other`/`transfer_*`）；`buy`/`sell` 只数 `buy` 和 `sell`（`ipo_allot`/`rights_issue` 不计入）；`turnover` = 买入 gross + 卖出 gross。
 - 费用占成交额：`fees.total / (买入 gross + 卖出 gross)`，分母 0 为 null。
 
 ## 7. 报告
 
 ### 7.1 文本报告
+
+- 末尾固定一行：`公式版本 holdbook-ledger-v1。`
 
 顺序：
 1. 头部：`持仓簿 报告`、截止日、账户数、标的数、行情来源。
@@ -601,7 +622,7 @@ row_hash = sha256(
 - 单文件、无外部资源、无 JavaScript；CSS 内联；UTF-8；CSP：
   `default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'`。
 - 必须包含：header（数据截止日、账户数、标的数、行情来源和抓取时间）、摘要、持仓表、集中度（前 3/前 5 占比）、费用、数据来源、免责声明。不包含对账区块。
-- header 的抓取时间：`--market live` 显示该次抓取的本机时间；`off`/`mock` 只显示来源，不显示时间。
+- header 的抓取时间：`--market live` 显示该次请求写入的 `prices.fetched_at` 最大值（UTC，`YYYY-MM-DD HH:MM:SS`）；`off`/`mock` 不显示时间。报告 footer 固定写公式版本 `holdbook-ledger-v1`。
 - 所有 CSV/券商文本 HTML 转义；不内联用户 HTML/CSS/URL。
 - 375px 无页面级横向滚动；表格在窄屏改为块列表；打印保留全部数据。
 - 视觉规则见 `DESIGN.md`。
@@ -624,22 +645,25 @@ row_hash = sha256(
 {
   "ok": true,
   "asOf": "2026-10-29",
-  "accounts": 2,
-  "instruments": 8,
+  "accounts": 1,
+  "instruments": 1,
   "market": "off",
+  "marketFetchedAt": null,
+  "method": "holdbook-ledger-v1",
   "summary": {
     "marketValue": "270800.00",
     "totalCost": "316010.00",
     "unrealizedPnl": "-45210.00",
     "unrealizedPct": -0.1431,
-    "realizedPnl": "13985.00",
+    "realizedPnl": "13990.00",
     "dividends": "600.00",
+    "interest": "0.00",
     "fees": {"commission": "120.00", "stamp": "80.00", "transfer": "12.00", "other": "0.00", "total": "212.00"},
-    "feesToTurnover": 0.0008,
+    "feesToTurnover": 0.001329,
     "xirr": 0.081234,
     "xirrReason": null,
-    "priced": 7,
-    "unpriced": 1
+    "priced": 1,
+    "unpriced": 0
   },
   "positions": [
     {"code":"600519.SH","name":"贵州茅台","quantity":"200.0000","avgCost":"1580.0500","price":"1354.0000","marketValue":"270800.00","weight":1.0,"unrealizedPnl":"-45210.00","unrealizedPct":-0.1431}
@@ -648,10 +672,10 @@ row_hash = sha256(
   "top5": 1.0,
   "tradeStats": {"total": 2, "buy": 1, "sell": 1, "turnover": "159480.00"},
   "sources": [{"file":"交割单_2026.csv","rows":126}],
-  "warnings": [{"code":"missing_price","message":"510300.SH 没有价格，未计入市值与盈亏"}]
+  "warnings": []
 }
 ```
-- `accounts` 是参与报告的账户数（有交易或持仓的账户）；`instruments` 是持仓标的数（qty>0）；`sources[].rows` 来自 `imports.rows_read`，同一文件多次导入取最后一次；指定 `--account` 时 sources 只含该账户。
+- `accounts` 是参与报告的账户数（截止日前有交易或持仓的账户；只有 `other`/`transfer_*` 的账户不计）；`instruments` 是持仓标的数（qty>0）；`sources[].rows` 来自 `imports.rows_read`，同一文件多次导入取最后一次；指定 `--account` 时 sources 只含该账户。
 - 没有价时 `price`、`marketValue`、`unrealizedPnl`、`unrealizedPct` 为 `null`。
 - JSON 模式不写报告文件；`report_path` 不出现在 JSON。
 
@@ -695,7 +719,7 @@ row_hash = sha256(
 | `bad_date` | 2 | 日期非法或未来 |
 | `bad_code` | 2 | 代码无法规范化或不存在 |
 | `unknown_account` | 2 | 账户不存在 |
-| `no_data` | 1 或 0 | 报告/explain/status 无数据；check 无数据为 0 |
+| `no_data` | 2 / 1 / 0 | `check --as-of` 缺该日快照 → 2；`report`/`explain`/`status`/`backup`/`reset` 无库 → 1；`check` 无任何数据 → 0 |
 | `ledger_negative` | 2 | 卖出超过持仓 |
 | `market_unavailable` | 4 | 行情全部失败且无缓存 |
 | `report_write_failed` | 1 | 报告写入失败 |

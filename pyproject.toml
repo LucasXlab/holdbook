@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "holdbook"
+version = "0.1.0"
+description = "本地持仓对账与成本报告工具"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "LucasYanzy"}]
+dependencies = []
+
+[project.scripts]
+holdbook = "holdbook.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["holdbook*"]
