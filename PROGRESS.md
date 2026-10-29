@@ -10,7 +10,7 @@
 
 ## 阶段 2：规格
 - 状态：完成待审
-- 产出：`SPEC.md`（789 行，重写为可执行契约）、`DESIGN.md`（163 行）、`docs/external-apis.md`（腾讯行情已实测）
+- 产出：`SPEC.md`（约 800 行，重写为可执行契约）、`DESIGN.md`（163 行）、`docs/external-apis.md`（腾讯行情已实测）
 - 已做：独立子代理对 517 行旧稿提出 40 条（14 严重）；已按「成本公式、对账 7 状态顺序、多账户 as_of、报告 JSON、行情 URL、对比度、算例」重写并修掉；新增 `imports` 表、`HOLDBOOK_MAX_IMPORT_BYTES`、手工价格 CSV、XIRR 收敛条件。
 - 下一步：审阅模式确认后进入阶段 3 开发
 

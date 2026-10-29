@@ -169,7 +169,7 @@ SQLite 3，文件 `<data_dir>/holdbook.db`。打开时执行：
 匹配前先做两条排除，避免把税和送股记反：
 
 - 文本含 `税`、`扣税`、`代扣` → `fee`（`红利税`、`股息税`、`代扣税` 都走这里，金额为负）。
-- 文本含 `送`、`转增` → `bonus_share`（`分红送股` 走这里，不按现金分红）。
+- 文本含 `送`、`转增` → `bonus_share`（`分红送股` 走这里，不按现金分红；如果同一行还含现金分红词，见下面的拆行规则）。
 
 然后按顺序匹配：
 
@@ -187,6 +187,7 @@ SQLite 3，文件 `<data_dir>/holdbook.db`。打开时执行：
 
 - `申购` 单独出现的行（未中签的申购冻结/扣款）→ `other`，只入库不计持仓；`中签`/`新股` 行才按 `ipo_allot` 入账。
 - 都不命中 → `other`，照常入库，摘要计「未识别」，stderr 打警告，不参与账。
+- 同一行同时含现金分红词和送股/转增词 → `bad_row`，提示拆成两行（一行现金分红、一行送股），避免静默丢掉现金部分。
 - `dividend`：现金分红，`quantity=0`，`price=0`，`amount` 取正数。
 - `bonus_share`：`quantity` 取正数，`price=0`，`amount=0`，四个费用为 0。
 - `rights_issue`：`quantity` 必须 >0，`price` 为配股价，`amount=-quantity*price`；数量为 0 → `bad_row`。
@@ -310,7 +311,7 @@ row_hash = sha256(
 1. 日期、操作必须可解析；否则错误行。
 2. `kind` 按 3.4.1 识别。`other` 不要求代码、数量、价格、金额。
 3. 非 `other` 且非现金类（`fee`、`transfer_in`、`transfer_out`）时，代码必须能规范化；否则错误行。
-4. 现金类缺少代码时用 `CASH.CASH`。
+4. 现金类（`fee`、`transfer_in`、`transfer_out`）缺少代码时用 `CASH.CASH`；`other` 缺少代码时也用 `CASH.CASH`。
 5. 交易类（`buy`、`sell`、`ipo_allot`、`rights_issue`）：
    - 数量、价格、金额至少有一个非空；否则错误行。
    - 有数量和价格：`gross=abs(quantity)*price`；若金额非空且 `abs(abs(amount)-gross)>0.02` → 错误行 `bad_row`，错误里给两者。
@@ -361,7 +362,7 @@ row_hash = sha256(
 
 ## 5. 命令
 
-全局参数（写在子命令前）：`--data-dir PATH`、`--json`、`--today YYYY-MM-DD`、`--quiet`、`-v/--verbose`。
+全局参数（写在子命令前）：`--data-dir PATH`、`--json`、`--today YYYY-MM-DD`、`--quiet`、`-v/--verbose`、`--version`。`--version` 等价于 `holdbook version`，立即退出 0。`--quiet` 抑制进度和摘要，只保留结果、警告和错误。
 
 退出码：
 
@@ -417,6 +418,7 @@ row_hash = sha256(
 - 输出：`快照: 华泰 2026-10-29，8 只标的`；覆盖时 `提示: 已覆盖 3 条`。
 - JSON：`{"ok":true,"account":"华泰","asOf":"2026-10-29","rows":8,"overwritten":3,"errors":[]}`。
 - `--dry-run` 不写库，`rows` 为将写入行数。
+- `errors` 数组元素固定为 `{"line": 37, "message": "数量不是数字「-」"}`。
 
 ### 5.4 `holdbook check [--account NAME] [--as-of YYYY-MM-DD] [--strict]`
 
@@ -451,7 +453,7 @@ row_hash = sha256(
 - 默认 HTML 输出 `<data_dir>/reports/report-<as_of>-<YYYYMMDD-HHMMSS>.html`；时间戳取 `HOLDBOOK_NOW`（未设置则系统时间）的 UTC 时间，格式 `%Y%m%d-%H%M%S`。同秒已存在同名文件时追加 `-2`、`-3`，不覆盖。
 - `--out` 只允许与 `--format html` 一起使用；`--format text` 时给 `--out` → 2 `bad_config`。
 - `--out -` 把 HTML 写到 stdout；此时不打印其他 stdout 文本，摘要写 stderr；`--json` 与 `--out -` 同时出现 → 2 `bad_config`。
-- `--json` 与 `--format html` 同时出现时，只输出 JSON，不写 HTML 文件。
+- `--json` 与 `--format html` 同时出现时，只输出 JSON，不写 HTML 文件；`--json` 与 `--open` 同时出现 → 2 `bad_config`；`--json` 与 `--out` 同时出现 → 2 `bad_config`。
 - `--open` 隐含 `--format html`；与 `--format text` 或 `--out -` 同时出现 → 2 `bad_config`。用 `open` / `xdg-open` / `cmd /c start` 打开；失败只警告，不影响退出码。
 - `--out` 指向已存在的普通文件时原子覆盖（临时文件 + `os.replace`）；指向目录 → 1 `file_not_writable`。
 - 无任何持仓/交易 → 1 `no_data`。
@@ -470,20 +472,20 @@ row_hash = sha256(
 
 ### 5.7 `holdbook status`
 
-- 无库 → 1 `no_data`。
+- 无库 → 1 `no_data`；库存在但没有任何账户/交易 → 0，输出零值。
 - 输出库路径、schema、账户数、每账户交易笔数/最近导入时间（`imports.imported_at` 最大值）/最近快照日期、标的数、行情模式。
 - JSON：`{"ok":true,"dbPath":"...","schemaVersion":1,"market":"off","accounts":[{"name":"华泰","transactions":126,"lastImportAt":"...","lastSnapshotDate":"2026-10-29"}],"instruments":8}`。
 
 ### 5.8 `holdbook backup [--out PATH]`
 
-- `VACUUM INTO` 一致副本；默认 `<data_dir>/holdbook-backup-<YYYYMMDD-HHMMSS>.db`。
+- 无库 → 1 `no_data`。`VACUUM INTO` 一致副本；默认 `<data_dir>/holdbook-backup-<YYYYMMDD-HHMMSS>.db`，时间戳取 `HOLDBOOK_NOW`（未设置则系统 UTC 时间）。
 - 目标已存在且是文件 → 覆盖？不覆盖，退出 2 `conflict`；是目录 → 1 `file_not_writable`。
 - JSON：`{"ok":true,"path":"...","bytes":123456}`。
 
 ### 5.9 `holdbook reset --yes`
 
 - 无 `--yes` → 2 `conflict`，提示命令会删除全部数据。
-- 删除 `holdbook.db`、`-wal`、`-shm`；保留目录和其他文件。
+- 无库 → 1 `no_data`。删除 `holdbook.db`、`-wal`、`-shm`；保留目录和其他文件。
 - JSON：`{"ok":true,"deleted":["..."]}`。
 
 ### 5.10 `holdbook version`
@@ -535,13 +537,13 @@ row_hash = sha256(
   1. 快照无该代码、`qty_calc=0` → 不出结果；
   2. 快照无该代码、`qty_calc>0` → `only_ledger`；
   3. 快照有、`qty_calc=0`、`qty_snap>0`：`has_position_tx=false` → `only_snapshot`；否则 → `qty_missing`；
-  4. 快照有、`qty_calc=0`、`qty_snap=0` → `matched`；
+  4. 快照有、`qty_calc=0`、`qty_snap=0` → 不出结果；
   5. `qty_calc != qty_snap`：`qty_calc < qty_snap` → `qty_missing`；否则 `qty_extra`；
   6. 数量相等、`cost_snap` 为空 → `no_cost`；
   7. 数量相等、`abs(avg_cost_calc - cost_snap) <= max(HOLDBOOK_COST_TOLERANCE_ABS, cost_snap * PCT / 100)` → `matched`；
   8. 否则 → `cost_off`。
 - `qtyDiff = qty_calc - qty_snap`；`costDiff = avg_cost_calc - cost_snap`（空值输出 `null`）。
-- `matched` 才计入 `matched` 数；其余计入 `differed`。
+- `matched` 才计入 `matched` 数；其余计入 `differed`。`items` 按代码升序排列。
 
 ### 6.3 提示规则
 
@@ -549,7 +551,6 @@ row_hash = sha256(
 1. `qty_missing` 且该代码在 `as_of` 前 90 天内有 `bonus_share`，且差值等于最近一次送转数量（4 位内）→ `差值正好等于 <date> 送转的 <qty> 股，可能漏导入该送转行`。
 2. `qty_missing` 且该代码在 `as_of` 前 90 天内有 `dividend` → `近期有分红，确认是否漏导入除权日之后的行`。
 3. `only_ledger` 且最后一条交易早于 `as_of` 30 天以上 → `该标的最后交易在 <date>，可能已卖出但未导入`。
-4. `qty_extra` 且该账户在 `as_of` 前 90 天内有 `transfer_out` → `近期有转出记录，确认是否漏导入转出`.
 
 ### 6.4 XIRR
 
@@ -605,7 +606,17 @@ row_hash = sha256(
 - 375px 无页面级横向滚动；表格在窄屏改为块列表；打印保留全部数据。
 - 视觉规则见 `DESIGN.md`。
 
-### 7.3 JSON 报告
+### 7.3 警告码
+
+| 码 | 触发 |
+|---|---|
+| `missing_price` | 标的没有可用价格 |
+| `manual_price_ignored` | `--prices` 中价格日期晚于 `as_of`，未采用 |
+| `market_partial` | `--market live` 部分代码失败，使用了缓存或无价 |
+| `xirr_cost_fallback` | XIRR 期末有标的按成本价替代市值 |
+| `source_missing` | 有交易但找不到对应 `imports` 记录（手工改库） |
+
+### 7.4 JSON 报告
 
 字段固定如下；金额/数量/价格为字符串，比率为 number 或 null：
 
@@ -688,6 +699,7 @@ row_hash = sha256(
 | `ledger_negative` | 2 | 卖出超过持仓 |
 | `market_unavailable` | 4 | 行情全部失败且无缓存 |
 | `report_write_failed` | 1 | 报告写入失败 |
+| `internal_error` | 1 | 未预期内部异常（不打印 traceback，除非 `--verbose`） |
 
 限制汇总：单文件 ≤ `HOLDBOOK_MAX_IMPORT_BYTES`（默认 104857600）；导入数据行 ≤ `HOLDBOOK_MAX_IMPORT_ROWS`（默认 200000）；文本字段 ≤ 200 字符；账户名 ≤ 40；名称 ≤ 40；代码 ≤ 20；数量/价格 ≤ 1e9；金额 ≤ 1e12；行情每批 60；超时 1–60 秒；重试 0–5；SQLite 写锁 5000 ms；XIRR 200 次迭代；报告最大 20 MiB（超过 → 1 `report_write_failed`）。
 
