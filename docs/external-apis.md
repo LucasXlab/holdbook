@@ -8,7 +8,7 @@
 
 ## 腾讯行情（live 报价）
 
-- **请求地址**：`https://qt.gtimg.cn/q?q=<代码列表>`，其中 `HOLDBOOK_QUOTE_BASE_URL` 的默认值就是 `https://qt.gtimg.cn/q`，实际请求为 `https://qt.gtimg.cn/q=sh600519,sz000001`（注意：这个接口把 query 直接拼在 `q=` 后面，没有参数名，是它自己的写法）。
+- **请求地址**：`https://qt.gtimg.cn/q=<代码列表>`，其中 `HOLDBOOK_QUOTE_BASE_URL` 的默认值是 `https://qt.gtimg.cn/q`，实际请求为 `https://qt.gtimg.cn/q=sh600519,sz000001`。这个接口没有参数名，代码列表直接拼在 `q=` 后面。
 - **鉴权**：无。不发任何请求头以外的凭证，也没有 cookie。
 - **方法**：`GET`。
 - **代码写法**：小写交易所前缀 + 6 位数字，例如 `sh600519`、`sz000001`、`sh510300`、`sz159915`。由本工具的规范代码（`600519.SH`）转换得到。
