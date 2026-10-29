@@ -1,0 +1,15 @@
+reference/
+.DS_Store
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+holdbook-data/
+holdbook-demo/
+*.db
+*.db-wal
+*.db-shm
+reports/
