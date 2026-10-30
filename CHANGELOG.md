@@ -13,7 +13,7 @@
 - `report`：文本 / 单文件 HTML（亮/暗/375px）/ JSON；总市值、成本、浮动/已实现、分红、利息、费用、费用率、集中度、XIRR；手工价、缓存、mock/live 行情。
 - `explain`：逐笔重放一只标的。
 - `status`、`backup`、`reset`、`demo`、`version`。
-- 53 个离线测试：临时目录、临时 SQLite、本地假 HTTP 服务、固定时钟；无第三方运行时依赖。
+- 96 个离线测试：临时目录、临时 SQLite、本地假 HTTP 服务、固定时钟；无第三方运行时依赖。
 - 文档：中文 README、英文 README、功能/开发/部署/偏离/外部接口、SPEC、DESIGN、MIT LICENSE。
 
 ### Known limits

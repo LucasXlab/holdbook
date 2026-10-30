@@ -5,7 +5,7 @@
   <p>English · <a href="README.md">简体中文</a></p>
   <p>
     <img src="https://img.shields.io/badge/python-3.11%2B-2f6f4e" alt="Python 3.11+">
-    <img src="https://img.shields.io/badge/tests-53%20passing-2f6f4e" alt="53 tests passing">
+    <img src="https://img.shields.io/badge/tests-96%20passing-2f6f4e" alt="96 tests passing">
     <img src="https://img.shields.io/badge/version-0.1.0-2f6f4e" alt="version 0.1.0">
     <img src="https://img.shields.io/badge/license-MIT-2f6f4e" alt="MIT">
   </p>
@@ -86,7 +86,7 @@ holdbook check
 holdbook report --market mock
 ```
 
-The minimal trade CSV needs `date,action`; the minimal snapshot CSV needs `code,quantity`. See [docs/features.md](docs/features.md#csv-列名) for aliases and validation.
+The minimal trade CSV needs `date,action`; the minimal snapshot CSV needs `code,quantity`. See [docs/features.md](docs/features.md#交割单-csv) for aliases and validation.
 
 ## Commands
 
@@ -130,7 +130,7 @@ These are order-of-magnitude numbers, not guarantees. Limits: 100 MiB and 200,00
 python3 -m unittest discover -s tests -v
 ```
 
-53 tests, all offline: temporary directories, temporary SQLite databases, a local fake HTTP server, and a fixed `HOLDBOOK_NOW` clock. No fixed sleeps. See [docs/development.md](docs/development.md).
+96 tests, all offline: temporary directories, temporary SQLite databases, a local fake HTTP server, and a fixed `HOLDBOOK_NOW` clock. No fixed sleeps. See [docs/development.md](docs/development.md).
 
 ## Docs
 

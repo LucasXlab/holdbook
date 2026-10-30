@@ -5,7 +5,7 @@
   <p><a href="README_EN.md">English</a> · 简体中文</p>
   <p>
     <img src="https://img.shields.io/badge/python-3.11%2B-2f6f4e" alt="Python 3.11+">
-    <img src="https://img.shields.io/badge/tests-53%20passing-2f6f4e" alt="53 tests passing">
+    <img src="https://img.shields.io/badge/tests-96%20passing-2f6f4e" alt="96 tests passing">
     <img src="https://img.shields.io/badge/version-0.1.0-2f6f4e" alt="version 0.1.0">
     <img src="https://img.shields.io/badge/license-MIT-2f6f4e" alt="MIT">
   </p>
@@ -104,9 +104,9 @@ holdbook check
 holdbook report --market mock
 ```
 
-3. 报告默认写到 `~/.local/share/holdbook/reports/report-<日期>-<时间>.html`；用 `--out report.html` 指定路径，`--open` 直接打开。
+3. 报告默认打印文本；加 `--format html` 才写到 `~/.local/share/holdbook/reports/report-<日期>-<时间>.html`，也可用 `--format html --out report.html` 指定路径，`--open` 直接打开。
 
-最小交割单只需要 `日期,操作` 两列；数量、价格、金额、费用按需给。持仓快照只需要 `代码,数量`；成本价和市值可选。详细列名和校验规则见 [docs/features.md](docs/features.md#csv-列名)。
+最小交割单只需要 `日期,操作` 两列；数量、价格、金额、费用按需给。持仓快照只需要 `代码,数量`；成本价和市值可选。详细列名和校验规则见 [docs/features.md](docs/features.md#交割单-csv)。
 
 ### 第一次使用建议
 
@@ -158,7 +158,7 @@ holdbook report --market mock
 python3 -m unittest discover -s tests -v
 ```
 
-当前 53 个测试，全部离线：临时目录、SQLite 临时库、本地假 HTTP 服务、`HOLDBOOK_NOW` 固定时钟；不使用固定 sleep。模块划分和发布检查见 [docs/development.md](docs/development.md)。
+当前 96 个测试，全部离线：临时目录、SQLite 临时库、本地假 HTTP 服务、`HOLDBOOK_NOW` 固定时钟；不使用固定 sleep。模块划分和发布检查见 [docs/development.md](docs/development.md)。
 
 ## 文档
 

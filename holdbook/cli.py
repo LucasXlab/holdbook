@@ -141,14 +141,7 @@ def _import_summary(files: list[dict], accounts_created: list[str], dry: bool) -
         total["added"] += f["added"]
         total["skipped"] += f["skipped"]
         total["errors"] += len(f["errors"])
-    d = {"ok": True, "files": files, "totals": total, "accountsCreated": accounts_created}
-    if dry:
-        d["wouldAdd"] = total["added"]
-        d["totals"]["added"] = 0
-        for f in files:
-            f["wouldAdd"] = f["added"]
-            f["added"] = 0
-    return d
+    return {"ok": True, "files": files, "totals": total, "accountsCreated": accounts_created}
 
 
 def cmd_import(cfg: Config, args, out: Out) -> int:
@@ -157,10 +150,13 @@ def cmd_import(cfg: Config, args, out: Out) -> int:
         raise err("bad_config", "--account 不能为空", 2)
     if len(account) > 40:
         raise err("bad_config", "--account 最长 40 个字符", 2)
-    if "\n" in account or "\r" in account:
-        raise err("bad_config", "--account 不能包含换行", 2)
-    if args.broker is not None and len(args.broker) > 40:
-        raise err("bad_config", "--broker 最长 40 个字符", 2)
+    if _has_control(account):
+        raise err("bad_config", "--account 不能包含控制字符（换行、ESC 等）", 2)
+    if args.broker is not None:
+        if len(args.broker) > 40:
+            raise err("bad_config", "--broker 最长 40 个字符", 2)
+        if _has_control(args.broker):
+            raise err("bad_config", "--broker 不能包含控制字符（换行、ESC 等）", 2)
     conn = connect(cfg)
     parsed = []
     for raw in args.files:
@@ -208,13 +204,12 @@ def cmd_import(cfg: Config, args, out: Out) -> int:
         summary = summaries[idx]
         out.info(f"账户: {account}")
         out.info(f"文件: {p.name}（{pt.rows_read} 行，表头第 {pt.header_line} 行）")
-        if args.dry_run:
-            out.info(f"新增 0 笔（试运行将新增 {summary.get('wouldAdd', summary['added'])} 笔），跳过重复 {summary['skipped']} 笔，错误 {len(pt.errors)} 行")
-        else:
-            out.info(f"新增 {summary['added']} 笔，跳过重复 {summary['skipped']} 笔，错误 {len(pt.errors)} 行")
+        out.info(f"新增 {summary['added']} 笔，跳过重复 {summary['skipped']} 笔，错误 {len(pt.errors)} 行")
         by_kind = ", ".join(f"{k} {v}" for k, v in sorted(pt.kinds.items()))
         out.info(f"按类型: {by_kind}" if by_kind else "按类型: 无")
         out.info(f"未识别: {pt.unknown} 行")
+        for w in pt.warnings:
+            print(f"警告: {w}", file=sys.stderr)
         if not out.json:
             for line, msg in pt.errors[:10]:
                 print(f"错误: 第 {line} 行：{msg} (code=bad_row)", file=sys.stderr)
@@ -226,9 +221,11 @@ def cmd_import(cfg: Config, args, out: Out) -> int:
         out.info(f"合计: 新增 {total['added']} 笔，跳过 {total['skipped']} 笔，错误 {total['errors']} 行")
     if any_errors:
         if args.dry_run:
-            out.info(f"试运行未写入；有 {total['errors']} 行未导入")
+            out.info(f"试运行：有 {total['errors']} 行未导入，未写入数据库")
         else:
             out.info(f"已入库，但有 {total['errors']} 行未导入")
+    elif args.dry_run:
+        out.info("试运行：未写入数据库")
     if out.json:
         data = _import_summary(summaries, created, args.dry_run)
         if any_errors and not args.dry_run:
@@ -239,6 +236,10 @@ def cmd_import(cfg: Config, args, out: Out) -> int:
 
 class _DryRun(Exception):
     pass
+
+
+def _has_control(value: str) -> bool:
+    return any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value)
 
 
 def _board(code: str) -> str:

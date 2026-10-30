@@ -253,6 +253,7 @@ def _trade_hash(account: str, tx: Tx, occurrence: int) -> str:
 class ParsedTrades:
     txs: list[Tx] = field(default_factory=list)
     errors: list[tuple[int, str]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     rows_read: int = 0
     kinds: dict[str, int] = field(default_factory=dict)
     unknown: int = 0
@@ -311,7 +312,10 @@ def parse_trades(path: Path, account: str, cfg: Config, encoding: str = "auto") 
                 code, board = normalize_code(raw_code)
             else:
                 board = "cash"
-            name = clean_text(_cell(row, idx, "name"))[:40]
+            name = clean_text(_cell(row, idx, "name"))
+            if len(name) > 40:
+                out.warnings.append(f"第 {line} 行：名称超过 40 字符，已截断")
+                name = name[:40]
             raw_qty = _cell(row, idx, "qty")
             raw_price = _cell(row, idx, "price")
             raw_amount = _cell(row, idx, "amount")
@@ -332,7 +336,10 @@ def parse_trades(path: Path, account: str, cfg: Config, encoding: str = "auto") 
             if kind in ("buy", "sell", "ipo_allot", "rights_issue"):
                 if not raw_qty:
                     raise ValueError("缺少数量")
-                q = abs(parse_number(raw_qty, "数量"))
+                raw_q = parse_number(raw_qty, "数量")
+                if raw_q < 0:
+                    out.warnings.append(f"第 {line} 行：数量为负，已按绝对值入账")
+                q = abs(raw_q)
                 if q == 0:
                     raise ValueError("数量不能为 0")
                 if raw_price:
@@ -419,7 +426,8 @@ def parse_trades(path: Path, account: str, cfg: Config, encoding: str = "auto") 
                 fee_commission=money(fees["commission"]), fee_stamp=money(fees["stamp"]),
                 fee_transfer=money(fees["transfer"]), fee_other=money(fees["otherfee"]),
                 note=raw_kind[:200], source_file=path.name, source_line=line, name=name,
-                gross_override=(money(amt_in) if kind in ("buy", "sell", "ipo_allot", "rights_issue") and raw_amount else None),
+                gross_override=(money(amt_in) if kind in ("buy", "sell", "ipo_allot", "rights_issue")
+                                and raw_amount and not raw_price else None),
             )
             base = "\x1f".join([
                 account, d.isoformat(), kind, code, format(tx.quantity, ".4f"),
@@ -434,6 +442,7 @@ def parse_trades(path: Path, account: str, cfg: Config, encoding: str = "auto") 
             out.kinds[kind] = out.kinds.get(kind, 0) + 1
             if kind == "other":
                 out.unknown += 1
+                out.warnings.append(f"第 {line} 行：未识别操作「{raw_kind}」，按 other 入库，不参与账")
         except ValueError as exc:
             out.errors.append((line, str(exc)))
     return out

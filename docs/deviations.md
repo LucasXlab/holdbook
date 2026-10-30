@@ -35,8 +35,8 @@
    原因：多账户场景下，一个账户还没拍快照不应该让整个 check 失败。测试：`CliTests.test_check_as_of_missing`。
 
 9. **SPEC 5.7 / `status.instruments`**  
-   实现统计 `instruments` 表全部行，包含费用/利息用的 `CASH.CASH`；报告里的 `instruments` 只数持仓。  
-   原因：status 是库状态，不是持仓报告；两者口径不同，已在字段注释和 README 区分。测试：`CliTests.test_explain_and_status`。
+   规格只写“标的数”。实现统计 `instruments` 表排除 `CASH.CASH`（费用/利息用的现金代码），得到用户可理解的持仓标的数；报告里的 `instruments` 同样只数持仓。  
+   原因：把 CASH 算成一只“标的”会让用户看到 5 只而报告只有 4 只。测试：`CliTests.test_explain_and_status`。
 
 10. **SPEC 5.2 / dry-run 的 `accountsCreated`**  
     实现 `--dry-run` 时仍会把“将要创建”的账户名放进 `accountsCreated`，但不写库。  

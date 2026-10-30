@@ -25,6 +25,7 @@ tests/
   test_cli.py    端到端命令
   test_market.py 本地假 HTTP：成功/429/5xx/404/畸形/超时
   test_report.py 报告数据/JSON/HTML/无价/行情失败
+  test_spec_edges.py 规格边界与回归
 ```
 
 ## 测试
@@ -33,7 +34,7 @@ tests/
 python3 -m unittest discover -s tests -v
 ```
 
-当前 53 个测试，全部离线。约定：
+当前 96 个测试，全部离线。约定：
 
 - 每个测试用 `tempfile.TemporaryDirectory()`；不写用户数据目录。
 - 固定 `HOLDBOOK_NOW=2026-10-29T12:00:00Z`；需要“今天”时传 `--today`。

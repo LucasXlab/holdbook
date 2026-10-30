@@ -87,7 +87,11 @@ def fetch(codes: list[str], cfg: Config, sleep=time.sleep, opener=urllib.request
         url = cfg.quote_base + "=" + ",".join(mapping)
         last = ""
         ok = False
+        deadline = started + TOTAL_CAP
         for attempt in range(cfg.retries + 1):
+            if time.monotonic() >= deadline:
+                last = "总时长超过 30 秒"
+                break
             try:
                 with opener(url, timeout=cfg.timeout) as resp:
                     raw = resp.read()
@@ -109,12 +113,19 @@ def fetch(codes: list[str], cfg: Config, sleep=time.sleep, opener=urllib.request
                 if exc.code not in (429,) and not (500 <= exc.code <= 599):
                     break
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
-                last = f"连接失败（{exc}）"
+                if isinstance(exc, TimeoutError) or "timed out" in str(exc) or "timeout" in str(exc):
+                    last = f"连接超时（{cfg.timeout} 秒）"
+                else:
+                    last = f"连接失败（{exc}）"
             except UnicodeDecodeError:
                 last = "响应不是 GB18030"
                 break
             if attempt < cfg.retries:
-                sleep(2 ** attempt)
+                delay = 2 ** attempt
+                if time.monotonic() + delay >= deadline:
+                    last = "总时长超过 30 秒"
+                    break
+                sleep(delay)
         if not ok:
             for c in batch:
                 failures.setdefault(c, last or "行情获取失败")

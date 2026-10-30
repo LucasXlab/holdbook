@@ -63,8 +63,8 @@
 | ISO 8601（日期部分） | `YYYY-MM-DD` 日期 | https://www.iso.org/iso-8601-date-and-time-format.html | 2026-10-29 访问返回 403（站点反爬）；日期格式按 RFC 3339 的 full-date 实现 |
 | SQLite WAL | 并发读写和崩溃恢复 | https://www.sqlite.org/wal.html | 2026-10-29 打开，HTTP 200；本机 SQLite 3.49.1 支持 |
 | SQLite PRAGMA | `journal_mode`、`foreign_keys`、`busy_timeout` | https://www.sqlite.org/pragma.html | 2026-10-29 打开，HTTP 200 |
-| Python `sqlite3` | 标准库数据库接口 | https://docs.python.org/3/library/sqlite3.html | 本机 Python 3.13.5；目标最低 3.10，接口相同 |
-| Python `csv` | 标准库 CSV 读写 | https://docs.python.org/3/library/csv.html | 本机 Python 3.13.5；目标最低 3.10，接口相同 |
+| Python `sqlite3` | 标准库数据库接口 | https://docs.python.org/3/library/sqlite3.html | 本机 Python 3.13.5；目标最低 3.11，接口相同 |
+| Python `csv` | 标准库 CSV 读写 | https://docs.python.org/3/library/csv.html | 本机 Python 3.13.5；目标最低 3.11，接口相同 |
 
 ## 如何复核「默认不联网」
 

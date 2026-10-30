@@ -63,8 +63,9 @@ class CliTests(unittest.TestCase):
         rc, out, err = self.invoke("--json", "import", str(self.trades), "--account", "华泰", "--dry-run")
         self.assertEqual(rc, 0)
         data = json.loads(out)
-        self.assertEqual(data["totals"]["added"], 0)
-        self.assertEqual(data["wouldAdd"], 9)
+        # SPEC 4.2：--dry-run 的摘要与真实导入一致，不写库
+        self.assertEqual(data["totals"]["added"], 9)
+        self.assertNotIn("wouldAdd", data)
         rc, out, err = self.invoke("--json", "status")
         self.assertEqual(json.loads(out)["accounts"], [])
 

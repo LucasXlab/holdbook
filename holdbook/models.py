@@ -30,13 +30,18 @@ def clean_text(value: str) -> str:
     return "".join(ch for ch in value if ch >= " " and ch not in "\x7f\x85")
 
 
+def _drop_negative_zero(v: Decimal, places: str) -> Decimal:
+    """避免显示成 -0.00 / -0.0000：量化后为零时丢掉符号。"""
+    v = v.quantize(D(places), rounding=ROUND_HALF_UP)
+    return abs(v) if v == 0 else v
+
+
 def fmt_money(x: Decimal | None, dash: str = "—") -> str:
     if x is None:
         return dash
     if not isinstance(x, Decimal):
         x = Decimal(str(x))
-    v = x.quantize(D("0.01"), rounding=ROUND_HALF_UP)
-    return f"{v:,.2f}"
+    return f"{_drop_negative_zero(x, '0.01'):,.2f}"
 
 
 def fmt_qty(x: Decimal | None, dash: str = "—") -> str:
@@ -44,7 +49,7 @@ def fmt_qty(x: Decimal | None, dash: str = "—") -> str:
         return dash
     if not isinstance(x, Decimal):
         x = Decimal(str(x))
-    s = f"{x.quantize(D('0.0001'), rounding=ROUND_HALF_UP):,.4f}"
+    s = f"{_drop_negative_zero(x, '0.0001'):,.4f}"
     if "." in s:
         s = s.rstrip("0").rstrip(".")
     return s
@@ -55,7 +60,7 @@ def fmt_pct(x: Decimal | float | None, dash: str = "—") -> str:
         return dash
     if not isinstance(x, Decimal):
         x = Decimal(str(x))
-    return f"{(x * 100).quantize(D('0.01'), rounding=ROUND_HALF_UP):.2f}%"
+    return f"{_drop_negative_zero(x * 100, '0.01'):.2f}%"
 
 
 @dataclass

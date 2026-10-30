@@ -110,7 +110,7 @@ def _check_schema(conn: sqlite3.Connection) -> None:
     if row is None:
         raise err("conflict", "这个数据库不是 Holdbook 的库（缺 meta.schema_version），不覆盖", 1)
     if str(row[0]) != "1":
-        raise err("conflict", f"数据库版本 {row[0]} 高于本程序支持的 1，请升级", 1)
+        raise err("conflict", f"数据库版本 {row[0]} 不受本程序支持的 1 支持，请升级或重建", 1)
     ok = conn.execute("PRAGMA quick_check").fetchone()
     if not ok or str(ok[0]).lower() != "ok":
         raise err("db_corrupt", "数据库完整性检查失败；先运行 holdbook backup 备份，再重建", 1)
