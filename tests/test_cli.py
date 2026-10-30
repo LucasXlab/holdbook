@@ -52,10 +52,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(self.invoke("init")[0], 0)
         rc, out, err = self.invoke("import", str(self.trades), "--account", "华泰", "--broker", "华泰证券")
         self.assertEqual(rc, 0, out + err)
-        self.assertIn("读取 9 行", out)
+        self.assertIn("文件: t.csv（9 行，表头第 1 行）", out)
+        self.assertIn("账户: 华泰", out)
         rc, out, err = self.invoke("import", str(self.trades), "--account", "华泰")
         self.assertEqual(rc, 0)
-        self.assertIn("跳过 9 笔", out)
+        self.assertIn("跳过重复 9 笔", out)
 
     def test_import_json_and_dry_run(self):
         self.assertEqual(self.invoke("init")[0], 0)
@@ -96,7 +97,7 @@ class CliTests(unittest.TestCase):
         self.setup_data()
         rc, out, err = self.invoke("--json", "check", "--as-of", "2026-01-01")
         self.assertEqual(rc, 2)
-        self.assertEqual(json.loads(out)["error"]["code"], "no_data")
+        self.assertEqual(json.loads(out)["code"], "no_data")
 
     def test_report_json_and_html(self):
         self.setup_data()
@@ -142,12 +143,14 @@ class CliTests(unittest.TestCase):
         data = json.loads(out)
         self.assertEqual(data["accounts"][0]["transactions"], 9)
         self.assertEqual(data["accounts"][0]["lastSnapshotDate"], "2026-10-29")
+        self.assertEqual(data["instruments"], 4)
 
     def test_demo_backup_reset(self):
         demo_dir = self.dir / "demo"
         rc, out, err = self.invoke("demo", "--dir", str(demo_dir))
         self.assertEqual(rc, 0, out + err)
         self.assertTrue((demo_dir / "report.html").exists())
+        self.assertIn("示例_交割单.csv", (demo_dir / "report.html").read_text(encoding="utf-8"))
         rc, out, err = self.invoke("demo", "--dir", str(demo_dir))
         self.assertEqual(rc, 2)
         self.setup_data()
@@ -164,7 +167,7 @@ class CliTests(unittest.TestCase):
     def test_error_json(self):
         rc, out, err = self.invoke("--json", "status")
         self.assertEqual(rc, 1)
-        self.assertEqual(json.loads(out)["error"]["code"], "no_data")
+        self.assertEqual(json.loads(out)["code"], "no_data")
         rc, out, err = self.invoke("explain", "BAD")
         self.assertEqual(rc, 2)
         self.assertIn("bad_code", err)

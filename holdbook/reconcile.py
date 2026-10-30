@@ -57,7 +57,7 @@ def check_account(account_name: str, snapshot_date: date, txs, snaps, cfg: Confi
             else:
                 status = "cost_off"
         qd = qc - qs if qs is not None else None
-        cd = (avg - cs) if (avg is not None and cs is not None and qs is not None and qc == qs) else None
+        cd = (avg - cs) if (avg is not None and cs is not None) else None
         hints: list[str] = []
         if status == "qty_missing" and code in bonus:
             recent = [(d, v) for d, v in bonus[code] if snapshot_date - timedelta(days=90) <= d <= snapshot_date]
@@ -68,7 +68,7 @@ def check_account(account_name: str, snapshot_date: date, txs, snaps, cfg: Confi
         if status == "qty_missing" and len(hints) < 2 and code in dividend:
             recent = [d for d in dividend[code] if snapshot_date - timedelta(days=90) <= d <= snapshot_date]
             if recent:
-                hints.append("近期有分红，确认是否漏导入除权日之后的行")
+                hints.append(f"近期有 {recent[-1].isoformat()} 分红，确认是否漏导入除权日之后的行")
         if status == "only_ledger" and len(hints) < 2 and position_dates.get(code):
             last = max(position_dates[code])
             if (snapshot_date - last).days >= 30:

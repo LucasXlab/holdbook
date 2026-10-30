@@ -96,6 +96,14 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
 
 def _check_schema(conn: sqlite3.Connection) -> None:
     try:
+        has_meta = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'"
+        ).fetchone()
+    except sqlite3.DatabaseError as exc:
+        raise err("db_corrupt", f"数据库无法读取：{exc}", 1)
+    if has_meta is None:
+        raise err("conflict", "这个数据库不是 Holdbook 的库（缺 meta 表），不覆盖", 1)
+    try:
         row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
     except sqlite3.DatabaseError as exc:
         raise err("db_corrupt", f"数据库无法读取：{exc}", 1)
@@ -111,8 +119,10 @@ def _check_schema(conn: sqlite3.Connection) -> None:
 def init_db(cfg: Config) -> bool:
     """Create or open the DB. Returns True if newly created."""
     try:
+        existed = cfg.data_dir.exists()
         cfg.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(cfg.data_dir, 0o700)
+        if not existed:
+            os.chmod(cfg.data_dir, 0o700)
     except OSError as exc:
         raise err("data_dir_unwritable", f"数据目录不可写：{cfg.data_dir}（{exc}）", 1)
     try:
@@ -330,6 +340,7 @@ def backup_db(conn: sqlite3.Connection, cfg: Config, out: Path) -> int:
     conn.execute("PRAGMA wal_checkpoint(FULL)")
     p = str(out).replace("'", "''")
     conn.execute(f"VACUUM INTO '{p}'")
+    os.chmod(out, 0o600)
     return out.stat().st_size
 
 

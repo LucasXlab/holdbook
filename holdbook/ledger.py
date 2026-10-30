@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from .errors import err
 from .models import D, PosState, ReplayRow, Tx, money, qty
@@ -17,6 +17,7 @@ def row_to_tx(r) -> Tx:
         fee_transfer=D(r["fee_transfer"]), fee_other=D(r["fee_other"]),
         note=r["note"], source_file=r["source_file"], source_line=r["source_line"],
         row_hash=r["row_hash"], name=r["name"] if "name" in r.keys() else "",
+        gross_override=(abs(D(r["amount"])) if r["kind"] in ("buy", "sell", "ipo_allot", "rights_issue") else None),
     )
 
 
@@ -48,7 +49,7 @@ def _apply(state: PosState, tx: Tx) -> None:
             raise ValueError("卖出数量必须为正")
         if st.quantity <= 0 or sell_qty > st.quantity:
             raise ValueError("卖出超过当前持仓")
-        cost_out = (st.total_cost * sell_qty / st.quantity).quantize(D('0.000000000001'))
+        cost_out = (st.total_cost * sell_qty / st.quantity).quantize(D('0.000000000001'), rounding=ROUND_HALF_UP)
         st.realized += (tx.gross - tx.fees) - cost_out
         st.quantity -= sell_qty
         st.total_cost -= cost_out

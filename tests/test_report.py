@@ -11,6 +11,7 @@ from holdbook.config import load_config
 from holdbook.csvio import parse_snapshots, parse_trades
 from holdbook.demo import SNAPSHOT, TRADES
 from holdbook.errors import HoldbookError
+from holdbook.models import D
 from holdbook.report import build, html_report, text_report, to_json
 
 ENV = {"HOLDBOOK_NOW": "2026-10-29T12:00:00Z"}
@@ -48,7 +49,7 @@ class ReportTests(unittest.TestCase):
         try:
             data = build(conn, self.cfg, None, date(2026, 10, 29), "mock", None)
             self.assertEqual(data["summary"]["totalCost"], 197068.50)
-            self.assertEqual(data["summary"]["marketValue"], 189448.00)
+            self.assertEqual(data["summary"]["marketValue"], 188898.00)
             self.assertEqual(data["summary"]["realizedPnl"], 293.50)
             self.assertEqual(data["summary"]["interest"], 36.50)
             self.assertEqual(data["instruments"], 4)
@@ -71,13 +72,13 @@ class ReportTests(unittest.TestCase):
         self.assertIn("<!doctype html>", html)
         self.assertIn("--bg:#fff", html)
         self.assertIn("prefers-color-scheme:dark", html)
-        self.assertIn("max-width:600px", html)
+        self.assertIn("max-width:680px", html)
         self.assertIn("公式版本 holdbook-ledger-v1", html)
         self.assertNotIn("<script", html)
         self.assertNotIn("对账结果", html)
         self.assertNotIn("对账差异", html)
         text = text_report(data)
-        self.assertIn("持仓簿持仓报告", text)
+        self.assertIn("持仓簿 报告", text)
         self.assertIn("公式版本 holdbook-ledger-v1", text)
 
     def test_no_price(self):
@@ -87,7 +88,7 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(data["summary"]["priced"], 0)
             self.assertEqual(data["summary"]["unpriced"], 4)
             self.assertIsNone(data["top3"])
-            self.assertTrue(any(w["code"] == "missing_price" for w in data["warnings"]))
+            self.assertEqual(sum(1 for w in data["warnings"] if w["code"] == "missing_price"), 1)
             self.assertTrue(any(w["code"] == "xirr_cost_fallback" for w in data["warnings"]))
         finally:
             conn.close()
@@ -111,5 +112,16 @@ class ReportTests(unittest.TestCase):
         try:
             data = build(conn, self.cfg, None, date(2026, 10, 29), "mock", str(p))
             self.assertTrue(any(w["code"] == "manual_price_ignored" for w in data["warnings"]))
+        finally:
+            conn.close()
+
+    def test_market_fetched_at_format(self):
+        conn = db.connect(self.cfg)
+        try:
+            with mock.patch("holdbook.report.load_prices", return_value=(
+                    {"600519.SH": D("1354.00")}, [], "2026-10-29T12:00:00Z", {})):
+                data = build(conn, self.cfg, None, date(2026, 10, 29), "live", None)
+            self.assertEqual(data["marketFetchedAt"], "2026-10-29 12:00:00")
+            self.assertIn("行情抓取 2026-10-29 12:00:00", html_report(data))
         finally:
             conn.close()

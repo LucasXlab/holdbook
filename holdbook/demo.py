@@ -59,7 +59,8 @@ def run_demo(path: Path, out, cfg: Config) -> int:
             for s in ps.rows:
                 upsert_instrument(conn, s.code, s.name or s.code, _board(s.code), dcfg.now_iso())
                 upsert_snapshot(conn, account_id, dcfg.today, s.code, s.name, s.quantity, s.cost_price, s.market_value, snap.name, dcfg.now_iso())
-        data = build(conn, dcfg, "华泰", dcfg.today, "mock", None)
+        with transaction(conn):
+            data = build(conn, dcfg, "华泰", dcfg.today, "mock", None)
         rep = path / "report.html"
         atomic_write(rep, html_report(data))
         txs = [r for r in conn.execute("SELECT * FROM transactions WHERE account_id=? ORDER BY trade_date,id", (account_id,))]
@@ -69,11 +70,10 @@ def run_demo(path: Path, out, cfg: Config) -> int:
     finally:
         conn.close()
     if out.json:
-        out.data({"ok": True, "dir": str(path), "report": str(rep), "check": {"matched": res["matched"], "differed": res["differed"]}})
+        out.data({"ok": True, "dir": str(path), "report": str(rep)})
     else:
         out.result(f"演示数据: {path}")
         out.result(f"报告: {rep}")
-        out.result(f"对账: 一致 {res['matched']} 只，差异 {res['differed']} 只（示例故意留了 10 股差异）")
     return 0
 
 

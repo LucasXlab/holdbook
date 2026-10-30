@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from .errors import err
+from .errors import HoldbookError, err
 
 DEFAULT_DATA_DIR = "~/.local/share/holdbook"
 DEFAULT_QUOTE_BASE = "https://qt.gtimg.cn/q"
@@ -109,7 +109,10 @@ def load_config(data_dir: str | None = None, today: str | None = None) -> Config
         raise err("bad_config", "HOLDBOOK_QUOTE_BASE_URL 必须以 http:// 或 https:// 开头")
 
     raw_today = today if today is not None else _env("HOLDBOOK_TODAY", "")
-    today_d = parse_date(raw_today, "--today") if raw_today else datetime.now().date()
+    try:
+        today_d = parse_date(raw_today, "--today") if raw_today else datetime.now().date()
+    except HoldbookError as exc:
+        raise err("bad_config", f"HOLDBOOK_TODAY 无效：{exc.message}")
 
     return Config(
         data_dir=dd,

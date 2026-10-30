@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 
 Z = Decimal("0")
 ONE = Decimal("1")
@@ -26,25 +26,36 @@ def qty(x: Decimal) -> Decimal:
     return q(x, 4)
 
 
+def clean_text(value: str) -> str:
+    return "".join(ch for ch in value if ch >= " " and ch not in "\x7f\x85")
+
+
 def fmt_money(x: Decimal | None, dash: str = "—") -> str:
     if x is None:
         return dash
-    return f"{x:,.2f}"
+    if not isinstance(x, Decimal):
+        x = Decimal(str(x))
+    v = x.quantize(D("0.01"), rounding=ROUND_HALF_UP)
+    return f"{v:,.2f}"
 
 
 def fmt_qty(x: Decimal | None, dash: str = "—") -> str:
     if x is None:
         return dash
-    s = f"{x:,.4f}"
+    if not isinstance(x, Decimal):
+        x = Decimal(str(x))
+    s = f"{x.quantize(D('0.0001'), rounding=ROUND_HALF_UP):,.4f}"
     if "." in s:
         s = s.rstrip("0").rstrip(".")
     return s
 
 
-def fmt_pct(x: Decimal | None, dash: str = "—") -> str:
+def fmt_pct(x: Decimal | float | None, dash: str = "—") -> str:
     if x is None:
         return dash
-    return f"{x * 100:.2f}%"
+    if not isinstance(x, Decimal):
+        x = Decimal(str(x))
+    return f"{(x * 100).quantize(D('0.01'), rounding=ROUND_HALF_UP):.2f}%"
 
 
 @dataclass
@@ -64,6 +75,7 @@ class Tx:
     source_line: int = 0
     row_hash: str = ""
     name: str = ""
+    gross_override: Decimal | None = None
 
     @property
     def fees(self) -> Decimal:
@@ -71,6 +83,8 @@ class Tx:
 
     @property
     def gross(self) -> Decimal:
+        if self.gross_override is not None:
+            return money(self.gross_override)
         return money(abs(self.quantity) * self.price)
 
 
@@ -100,7 +114,7 @@ class PosState:
     def avg_cost(self) -> Decimal | None:
         if self.quantity == 0:
             return None
-        return self.total_cost / self.quantity
+        return (self.total_cost / self.quantity).quantize(D("0.000000000001"), rounding=ROUND_HALF_UP)
 
 
 @dataclass

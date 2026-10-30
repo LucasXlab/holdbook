@@ -109,7 +109,7 @@ def _as_of(cfg: Config, raw: str | None) -> date:
 
 
 def _err_obj(e: HoldbookError) -> dict:
-    return {"ok": False, "error": {"code": e.code, "message": e.message}}
+    return {"error": e.message, "code": e.code}
 
 
 def _emit_error(e: HoldbookError, out: Out) -> int:
@@ -126,9 +126,12 @@ def cmd_init(cfg: Config, args, out: Out) -> int:
     created = init_db(cfg)
     (cfg.data_dir / "reports").mkdir(parents=True, exist_ok=True)
     msg = "已就绪（schema_version=1）" if created else "已就绪（已存在，未改动）"
+    out.result(f"数据目录: {cfg.data_dir}")
+    out.result(f"数据库: {cfg.db_path}")
     out.result(msg)
     if out.json:
-        out.data({"ok": True, "dbPath": str(cfg.db_path), "created": created, "schemaVersion": 1})
+        # --json suppresses result lines in Out.result only for JSON; emit one object
+        out.data({"ok": True, "dbPath": str(cfg.db_path), "schemaVersion": 1})
     return 0
 
 
@@ -149,22 +152,29 @@ def _import_summary(files: list[dict], accounts_created: list[str], dry: bool) -
 
 
 def cmd_import(cfg: Config, args, out: Out) -> int:
+    account = args.account.strip()
+    if not account:
+        raise err("bad_config", "--account 不能为空", 2)
+    if len(account) > 40:
+        raise err("bad_config", "--account 最长 40 个字符", 2)
+    if "\n" in account or "\r" in account:
+        raise err("bad_config", "--account 不能包含换行", 2)
+    if args.broker is not None and len(args.broker) > 40:
+        raise err("bad_config", "--broker 最长 40 个字符", 2)
     conn = connect(cfg)
     parsed = []
     for raw in args.files:
         p = Path(raw)
-        parsed.append((p, parse_trades(p, args.account, cfg, args.encoding)))
-    if not args.account.strip():
-        raise err("bad_config", "--account 不能为空")
+        parsed.append((p, parse_trades(p, account, cfg, args.encoding)))
 
     summaries = []
     created = []
     any_errors = False
     try:
         with transaction(conn):
-            account_id, was_created = ensure_account(conn, args.account, args.broker, cfg.now_iso())
+            account_id, was_created = ensure_account(conn, account, args.broker, cfg.now_iso())
             if was_created:
-                created.append(args.account)
+                created.append(account)
             for p, pt in parsed:
                 added = skipped = 0
                 for tx in pt.txs:
@@ -179,7 +189,7 @@ def cmd_import(cfg: Config, args, out: Out) -> int:
                     any_errors = True
                 if not args.dry_run:
                     msg = f"{len(pt.errors)} 行未导入" if pt.errors else ""
-                    insert_import(conn, args.account, p.name, cfg.now_iso(), pt.rows_read, added, skipped, len(pt.errors), status, msg)
+                    insert_import(conn, account, p.name, cfg.now_iso(), pt.rows_read, added, skipped, len(pt.errors), status, msg)
                 summaries.append({
                     "file": p.name, "rows": pt.rows_read, "added": added,
                     "skipped": skipped,
@@ -192,10 +202,19 @@ def cmd_import(cfg: Config, args, out: Out) -> int:
     finally:
         conn.close()
 
-    for p, pt in parsed:
-        out.info(f"交割单: {args.account} · {p.name}")
-        out.info(f"读取 {pt.rows_read} 行，新增 {next(x['added'] for x in summaries if x['file'] == p.name)} 笔，"
-                 f"跳过 {next(x['skipped'] for x in summaries if x['file'] == p.name)} 笔，错误 {len(pt.errors)} 行")
+    for name in created:
+        out.info(f"新建账户: {name}")
+    for idx, (p, pt) in enumerate(parsed):
+        summary = summaries[idx]
+        out.info(f"账户: {account}")
+        out.info(f"文件: {p.name}（{pt.rows_read} 行，表头第 {pt.header_line} 行）")
+        if args.dry_run:
+            out.info(f"新增 0 笔（试运行将新增 {summary.get('wouldAdd', summary['added'])} 笔），跳过重复 {summary['skipped']} 笔，错误 {len(pt.errors)} 行")
+        else:
+            out.info(f"新增 {summary['added']} 笔，跳过重复 {summary['skipped']} 笔，错误 {len(pt.errors)} 行")
+        by_kind = ", ".join(f"{k} {v}" for k, v in sorted(pt.kinds.items()))
+        out.info(f"按类型: {by_kind}" if by_kind else "按类型: 无")
+        out.info(f"未识别: {pt.unknown} 行")
         if not out.json:
             for line, msg in pt.errors[:10]:
                 print(f"错误: 第 {line} 行：{msg} (code=bad_row)", file=sys.stderr)
@@ -206,7 +225,10 @@ def cmd_import(cfg: Config, args, out: Out) -> int:
     if len(parsed) > 1:
         out.info(f"合计: 新增 {total['added']} 笔，跳过 {total['skipped']} 笔，错误 {total['errors']} 行")
     if any_errors:
-        out.info(f"已入库，但有 {total['errors']} 行未导入")
+        if args.dry_run:
+            out.info(f"试运行未写入；有 {total['errors']} 行未导入")
+        else:
+            out.info(f"已入库，但有 {total['errors']} 行未导入")
     if out.json:
         data = _import_summary(summaries, created, args.dry_run)
         if any_errors and not args.dry_run:
@@ -275,7 +297,13 @@ def cmd_snapshot(cfg: Config, args, out: Out) -> int:
 
 
 def cmd_check(cfg: Config, args, out: Out) -> int:
-    conn = connect(cfg)
+    try:
+        conn = connect(cfg)
+    except HoldbookError as exc:
+        if exc.code == "no_data":
+            _check_empty(out, cfg)
+            return 0
+        raise
     try:
         accounts = all_accounts(conn)
         if args.account:
@@ -408,15 +436,15 @@ def cmd_report(cfg: Config, args, out: Out) -> int:
         data = build(conn, cfg, args.account, as_of, market, args.prices)
         if out.json:
             out.data(to_json(data))
-            return 0
+            return 2 if data.get("manualErrors") else 0
         if fmt == "text":
             out.result(text_report(data))
-            return 0
+            return 2 if data.get("manualErrors") else 0
         body = html_report(data)
         if args.out == "-":
             print(body)
             print(f"报告: HTML 已写到 stdout（{len(body.encode('utf-8'))} 字节）", file=sys.stderr)
-            return 0
+            return 2 if data.get("manualErrors") else 0
         if args.out:
             path = Path(args.out)
             if path.exists() and path.is_dir():
@@ -434,11 +462,11 @@ def cmd_report(cfg: Config, args, out: Out) -> int:
         try:
             atomic_write(path, body)
         except OSError as exc:
-            raise err("file_not_writable", f"报告写入失败：{path}（{exc}）", 1)
+            raise err("report_write_failed", f"报告写入失败：{path}（{exc}）", 1)
         out.info(f"报告: {path}（{len(raw)} 字节）")
         if args.open:
             _open_file(path, out)
-        return 0
+        return 2 if data.get("manualErrors") else 0
     finally:
         conn.close()
 
@@ -446,11 +474,13 @@ def cmd_report(cfg: Config, args, out: Out) -> int:
 def _open_file(path: Path, out: Out) -> None:
     try:
         if sys.platform == "darwin":
-            subprocess.run(["open", str(path)], check=False)
+            rc = subprocess.run(["open", str(path)], check=False).returncode
         elif os.name == "nt":
-            subprocess.run(["cmd", "/c", "start", "", str(path)], check=False)
+            rc = subprocess.run(["cmd", "/c", "start", "", str(path)], check=False).returncode
         else:
-            subprocess.run(["xdg-open", str(path)], check=False)
+            rc = subprocess.run(["xdg-open", str(path)], check=False).returncode
+        if rc != 0:
+            out.warn(f"打开报告失败：退出码 {rc}")
     except OSError as exc:
         out.warn(f"打开报告失败：{exc}")
 
@@ -521,7 +551,7 @@ def cmd_status(cfg: Config, args, out: Out) -> int:
             li = conn.execute("SELECT MAX(imported_at) FROM imports WHERE account_name=?", (a["name"],)).fetchone()[0]
             ls = latest_snapshot_date(conn, a["id"])
             rows.append({"name": a["name"], "transactions": int(n), "lastImportAt": li, "lastSnapshotDate": ls})
-        instruments = int(conn.execute("SELECT COUNT(*) FROM instruments").fetchone()[0])
+        instruments = int(conn.execute("SELECT COUNT(*) FROM instruments WHERE code != 'CASH.CASH'").fetchone()[0])
         if out.json:
             out.data({"ok": True, "dbPath": str(cfg.db_path), "schemaVersion": 1,
                       "market": cfg.market, "accounts": rows, "instruments": instruments})
@@ -592,6 +622,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     json_flag = "--json" in argv
     quiet_flag = "--quiet" in argv
+    verbose_flag = "-v" in argv or "--verbose" in argv
     argv = [a for a in argv if a not in ("--json", "--quiet")]
     parser = _build_parser()
     try:
@@ -634,7 +665,7 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit:
         raise
     except Exception as exc:
-        if "-v" in sys.argv or "--verbose" in sys.argv:
+        if verbose_flag:
             import traceback
             traceback.print_exc()
         e = HoldbookError("internal_error", f"内部错误：{exc}", 1)

@@ -34,9 +34,7 @@ def xirr(cfs: list[tuple[date, Decimal]]) -> tuple[float | None, str | None]:
     r = -0.99
     while r <= 10.0001:
         cur = f(r)
-        if abs(cur) < tol:
-            return round(r, 6), None
-        if prev == 0 or (prev > 0) != (cur > 0):
+        if (prev > 0) != (cur > 0):
             bracket = (prev_r, r)
             break
         prev_r, prev = r, cur

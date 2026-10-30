@@ -12,13 +12,14 @@ from pathlib import Path
 
 from .config import Config
 from .errors import err
-from .models import D, Tx, Snap, money, qty
+from .models import D, Tx, Snap, clean_text, money, qty
 
 DATE_ALIASES = {"成交日期", "发生日期", "交易日期", "日期", "交收日期", "date"}
 CODE_ALIASES = {"证券代码", "股票代码", "代码", "symbol", "code"}
 NAME_ALIASES = {"证券名称", "股票名称", "名称", "name"}
 KIND_ALIASES = {"操作", "买卖标志", "业务名称", "摘要", "交易类型", "business"}
-QTY_ALIASES = {"成交数量", "发生数量", "数量", "qty", "quantity", "持仓数量", "股票余额", "当前持仓"}
+QTY_ALIASES = {"成交数量", "发生数量", "数量", "qty", "quantity"}
+SNAP_QTY_ALIASES = QTY_ALIASES | {"持仓数量", "股票余额", "当前持仓"}
 PRICE_ALIASES = {"成交价格", "成交均价", "价格", "price"}
 AMOUNT_ALIASES = {"成交金额", "发生金额", "金额", "amount"}
 COMMISSION_ALIASES = {"手续费", "佣金", "commission"}
@@ -205,12 +206,22 @@ def _header_and_rows(text: str, delim: str, required: set[str]):
     if header_idx is None:
         raise CsvProblem("missing_columns", "前 5 行里找不到必需列，无法识别表头")
     header = [norm_header(c) for c in rows[header_idx]]
-    data = rows[header_idx + 1:]
-    data = [r for r in data if any(c.strip() for c in r) and not (r and r[0].lstrip().startswith("#"))]
-    return header, data, header_idx + 1
+    data = []
+    lines = []
+    for lineno, row in enumerate(rows[header_idx + 1:], start=header_idx + 2):
+        if not any(c.strip() for c in row):
+            continue
+        if row and row[0].lstrip().startswith("#"):
+            continue
+        data.append(row)
+        lines.append(lineno)
+    return header, data, header_idx + 1, lines
 
 
 def _map_columns(header: list[str], mapping: dict[str, set[str]]) -> dict[str, int]:
+    seen = [h for h in header if h]
+    if len(seen) != len(set(seen)):
+        raise CsvProblem("duplicate_column", "表头列名重复")
     out: dict[str, int] = {}
     for i, h in enumerate(header):
         for key, aliases in mapping.items():
@@ -252,7 +263,7 @@ def parse_trades(path: Path, account: str, cfg: Config, encoding: str = "auto") 
     text = _read_text(path, encoding, cfg)
     delim = _delimiter(text)
     try:
-        header, rows, header_line = _header_and_rows(text, delim, DATE_ALIASES)
+        header, rows, header_line, row_lines = _header_and_rows(text, delim, DATE_ALIASES)
     except CsvProblem as exc:
         raise err(exc.code, f"{path.name}: {exc.message}", 2)
     mapping = {
@@ -276,10 +287,10 @@ def parse_trades(path: Path, account: str, cfg: Config, encoding: str = "auto") 
     out = ParsedTrades(rows_read=len(rows), header_line=header_line)
     seen: dict[str, int] = {}
     for offset, row in enumerate(rows):
-        line = header_line + offset + 1
-        if not any(c.strip() for c in row):
-            continue
+        line = row_lines[offset]
         try:
+            if len(row) > len(header) and any(c.strip() for c in row[len(header):]):
+                raise ValueError(f"列数 {len(row)} 多于表头 {len(header)}")
             raw_date = _cell(row, idx, "date")
             if not raw_date:
                 raise ValueError("日期为空")
@@ -287,6 +298,8 @@ def parse_trades(path: Path, account: str, cfg: Config, encoding: str = "auto") 
             if d > cfg.today:
                 raise ValueError(f"日期 {d} 晚于今天 {cfg.today}")
             raw_kind = _cell(row, idx, "kind")
+            if not raw_kind:
+                raise ValueError("操作列为空")
             kind = classify(raw_kind)
             raw_code = _cell(row, idx, "code")
             code = "CASH.CASH"
@@ -298,7 +311,7 @@ def parse_trades(path: Path, account: str, cfg: Config, encoding: str = "auto") 
                 code, board = normalize_code(raw_code)
             else:
                 board = "cash"
-            name = _cell(row, idx, "name")[:40]
+            name = clean_text(_cell(row, idx, "name"))[:40]
             raw_qty = _cell(row, idx, "qty")
             raw_price = _cell(row, idx, "price")
             raw_amount = _cell(row, idx, "amount")
@@ -311,6 +324,8 @@ def parse_trades(path: Path, account: str, cfg: Config, encoding: str = "auto") 
             for fn, fv in fees.items():
                 if fv < 0:
                     raise ValueError(f"{fn} 不能为负")
+                if fv != money(fv):
+                    raise ValueError(f"{fn} 最多 2 位小数")
             q = D(0)
             p = D(0)
             amt = D(0)
@@ -404,6 +419,7 @@ def parse_trades(path: Path, account: str, cfg: Config, encoding: str = "auto") 
                 fee_commission=money(fees["commission"]), fee_stamp=money(fees["stamp"]),
                 fee_transfer=money(fees["transfer"]), fee_other=money(fees["otherfee"]),
                 note=raw_kind[:200], source_file=path.name, source_line=line, name=name,
+                gross_override=(money(amt_in) if kind in ("buy", "sell", "ipo_allot", "rights_issue") and raw_amount else None),
             )
             base = "\x1f".join([
                 account, d.isoformat(), kind, code, format(tx.quantity, ".4f"),
@@ -435,10 +451,10 @@ def parse_snapshots(path: Path, cfg: Config, encoding: str = "auto") -> ParsedSn
     text = _read_text(path, encoding, cfg)
     delim = _delimiter(text)
     try:
-        header, rows, header_line = _header_and_rows(text, delim, CODE_ALIASES)
+        header, rows, header_line, row_lines = _header_and_rows(text, delim, CODE_ALIASES)
     except CsvProblem as exc:
         raise err(exc.code, f"{path.name}: {exc.message}", 2)
-    mapping = {"code": CODE_ALIASES, "name": NAME_ALIASES, "qty": QTY_ALIASES, "cost": COST_ALIASES, "mv": MV_ALIASES}
+    mapping = {"code": CODE_ALIASES, "name": NAME_ALIASES, "qty": SNAP_QTY_ALIASES, "cost": COST_ALIASES, "mv": MV_ALIASES}
     try:
         idx = _map_columns(header, mapping)
     except CsvProblem as exc:
@@ -451,10 +467,10 @@ def parse_snapshots(path: Path, cfg: Config, encoding: str = "auto") -> ParsedSn
     out = ParsedSnapshots(rows_read=len(rows))
     by_code: dict[str, int] = {}
     for offset, row in enumerate(rows):
-        line = header_line + offset + 1
-        if not any(c.strip() for c in row):
-            continue
+        line = row_lines[offset]
         try:
+            if len(row) > len(header) and any(c.strip() for c in row[len(header):]):
+                raise ValueError(f"列数 {len(row)} 多于表头 {len(header)}")
             raw_code = _cell(row, idx, "code")
             if not raw_code:
                 raise ValueError("代码为空")
@@ -470,7 +486,7 @@ def parse_snapshots(path: Path, cfg: Config, encoding: str = "auto") -> ParsedSn
                 raise ValueError("市值不能为负")
             snap = Snap(code=code, quantity=qty(qv), cost_price=None if cp is None else qty(cp),
                         market_value=None if mv is None else money(mv),
-                        name=_cell(row, idx, "name")[:40], source_file=path.name)
+                        name=clean_text(_cell(row, idx, "name"))[:40], source_file=path.name)
             if code in by_code:
                 out.duplicates += 1
                 out.rows[by_code[code]] = snap
@@ -493,7 +509,7 @@ def parse_prices(path: Path, cfg: Config, as_of: date, encoding: str = "auto") -
     text = _read_text(path, encoding, cfg)
     delim = _delimiter(text)
     try:
-        header, rows, header_line = _header_and_rows(text, delim, CODE_ALIASES)
+        header, rows, header_line, row_lines = _header_and_rows(text, delim, CODE_ALIASES)
     except CsvProblem as exc:
         raise err(exc.code, f"{path.name}: {exc.message}", 2)
     mapping = {"code": CODE_ALIASES, "close": PRICE_ALIASES | {"收盘价", "close"}, "date": DATE_ALIASES}
@@ -503,17 +519,19 @@ def parse_prices(path: Path, cfg: Config, as_of: date, encoding: str = "auto") -
         raise err(exc.code, f"{path.name}: {exc.message}", 2)
     if "code" not in idx or "close" not in idx:
         raise err("missing_columns", f"{path.name}: 缺少 code 或 close 列", 2)
+    if len(rows) > cfg.max_rows:
+        raise err("bad_csv", f"{path.name}: 数据行 {len(rows)} 超过上限 {cfg.max_rows}", 2)
     out: list[ParsedPrice] = []
     errors: list[tuple[int, str]] = []
     for offset, row in enumerate(rows):
-        line = header_line + offset + 1
-        if not any(c.strip() for c in row):
-            continue
+        line = row_lines[offset]
         try:
+            if len(row) > len(header) and any(c.strip() for c in row[len(header):]):
+                raise ValueError(f"列数 {len(row)} 多于表头 {len(header)}")
             code, _ = normalize_code(_cell(row, idx, "code"))
             close = parse_number(_cell(row, idx, "close"), "close")
-            if close <= 0:
-                raise ValueError("close 必须为正")
+            if close <= 0 or close > D("1000000"):
+                raise ValueError("close 必须在 (0, 1000000] 之间")
             d = parse_date(_cell(row, idx, "date")) if _cell(row, idx, "date") else as_of
             out.append(ParsedPrice(code, qty(close), d))
         except ValueError as exc:

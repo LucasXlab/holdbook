@@ -11,17 +11,17 @@ from decimal import Decimal
 from .config import Config
 from .db import price_get, price_put, upsert_instrument
 from .errors import err
-from .models import D
+from .models import D, clean_text
 
 MOCK = {
     "600519.SH": ("贵州茅台", D("1354.00")),
     "000001.SZ": ("平安银行", D("11.54")),
-    "510300.SH": ("沪深300ETF", D("4.111")),
+    "510300.SH": ("沪深300ETF", D("4.001")),
+    "113050.SH": ("转债", D("144.967")),
     "159915.SZ": ("创业板ETF", D("2.535")),
     "000858.SZ": ("五粮液", D("118.75")),
-    "601318.SH": ("中国平安", D("48.20")),
-    "300750.SZ": ("宁德时代", D("180.00")),
-    "688981.SH": ("中芯国际", D("92.50")),
+    "601318.SH": ("中国平安", D("62.30")),
+    "512880.SH": ("证券ETF", D("1.234")),
 }
 
 TOTAL_CAP = 30.0
@@ -50,12 +50,12 @@ def parse_quotes(text: str) -> dict[str, tuple[str, Decimal]]:
         parts = payload.split("~")
         if len(parts) < 5:
             continue
-        name = parts[1].strip()
+        name = clean_text(parts[1].strip())[:40]
         try:
             price = D(parts[3])
         except Exception:
             continue
-        if not price.is_finite() or price <= 0:
+        if not price.is_finite() or price <= 0 or price > D("1000000"):
             continue
         code = key[1:] if key.startswith("v_") else key
         out[code] = (name, price)
@@ -93,7 +93,7 @@ def fetch(codes: list[str], cfg: Config, sleep=time.sleep, opener=urllib.request
                     raw = resp.read()
                     text = raw.decode("gb18030")
                 parsed = parse_quotes(text)
-                fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                fetched_at = cfg.now_iso()
                 got = set()
                 for qt, canonical in mapping.items():
                     if qt in parsed:
@@ -152,14 +152,10 @@ def load_prices(conn, cfg: Config, codes: list[str], as_of: date, mode: str,
             failures[code] = msg
     elif mode == "mock":
         for code in missing:
-            if code in MOCK:
-                name, price = MOCK[code]
-                prices[code] = price
-                upsert_instrument(conn, code, name, _board(code), cfg.now_iso())
-                price_put(conn, code, as_of, price, "mock", cfg.now_iso())
-        for code in codes:
-            if code not in prices:
-                failures[code] = "mock 没有这个代码"
+            name, price = MOCK.get(code, (code, D("10.00")))
+            prices[code] = price
+            upsert_instrument(conn, code, name, _board(code), cfg.now_iso())
+            price_put(conn, code, as_of, price, "mock", cfg.now_iso())
     elif mode == "off":
         pass
     if mode == "live" and missing and not any(c in prices for c in missing):

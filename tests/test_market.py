@@ -35,7 +35,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.mode == "slow":
             time.sleep(2)
-        if self.mode == "bad":
+        if self.mode == "badprice":
+            body = 'v_sh600519="1~贵州茅台~600519~0~1330.75~";'.encode("gb18030")
+        elif self.mode == "bad":
             body = b"not a quote"
         else:
             body = 'v_sh600519="1~贵州茅台~600519~1354.00~1330.75~";\nv_sz000001="51~平安银行~000001~11.54~11.31~";'.encode("gb18030")
@@ -97,6 +99,17 @@ class MarketTests(unittest.TestCase):
         Handler.mode = "bad"
         r = fetch(["600519.SH"], self.cfg, sleep=lambda _: None)
         self.assertIn("600519.SH", r.failures)
+
+    def test_bad_price(self):
+        Handler.mode = "badprice"
+        r = fetch(["600519.SH"], self.cfg, sleep=lambda _: None)
+        self.assertIn("600519.SH", r.failures)
+
+    def test_two_batches_for_120_codes(self):
+        codes = [f"{600000+i}.SH" for i in range(120)]
+        r = fetch(codes, self.cfg, sleep=lambda _: None)
+        self.assertEqual(Handler.calls, 2)
+        self.assertTrue(r.failures)
 
     def test_timeout(self):
         Handler.mode = "slow"

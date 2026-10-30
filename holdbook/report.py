@@ -23,34 +23,49 @@ def _fmt_num(x, places=2) -> str:
 
 
 def _price_map(conn, cfg: Config, codes: list[str], as_of: date, market: str,
-               manual_path: str | None) -> tuple[dict[str, Decimal], list[dict], str | None, dict[str, str]]:
+               manual_path: str | None) -> tuple[dict[str, Decimal], list[dict], str | None, dict[str, str], int]:
     warnings: list[dict] = []
     manual: dict[str, tuple[Decimal, date]] = {}
+    manual_rows: list[tuple[str, str, date, Decimal]] = []
+    new_codes: set[str] = set()
+    manual_errors = 0
     if manual_path:
         parsed, errors = parse_prices(Path(manual_path), cfg, as_of)
-        if errors:
-            line, msg = errors[0]
-            raise err("bad_row", f"{Path(manual_path).name} 第 {line} 行：{msg}", 2)
+        manual_errors = len(errors)
+        for line, msg in errors:
+            warnings.append({"code": "manual_price_error",
+                             "message": f"{Path(manual_path).name} 第 {line} 行：{msg}"})
         for p in parsed:
             if p.date > as_of:
                 warnings.append({"code": "manual_price_ignored", "message": f"{p.code} 价格日期 {p.date} 晚于 {as_of}，未采用"})
                 continue
-            manual[p.code] = (p.close, p.date)
-        for code, (close, pdate) in manual.items():
             try:
-                norm, board = normalize_code(code)
+                norm, board = normalize_code(p.code)
             except ValueError as exc:
-                raise err("bad_code", f"{code}: {exc}", 2)
-            upsert_instrument(conn, norm, norm, board, cfg.now_iso())
-            price_put(conn, norm, pdate, close, "manual", cfg.now_iso())
+                raise err("bad_code", f"{p.code}: {exc}", 2)
+            exists = conn.execute("SELECT 1 FROM instruments WHERE code=?", (norm,)).fetchone()
+            if not exists:
+                new_codes.add(norm)
+                warnings.append({"code": "manual_price_new_code",
+                                 "message": f"{norm} 没有交易或快照引用，已自动建标的"})
+            manual_rows.append((norm, board, p.date, p.close))
+            if p.code not in manual or p.date >= manual[p.code][1]:
+                manual[p.code] = (p.close, p.date)
+    # Fetch/cache first; writes happen only after network I/O, so no write lock is held across it.
     prices, more, live_at, failures = load_prices(conn, cfg, codes, as_of, market)
+    if live_at:
+        live_at = live_at.replace("T", " ").removesuffix("Z")
+    for norm, board, pdate, close in manual_rows:
+        if norm in new_codes:
+            upsert_instrument(conn, norm, norm, board, cfg.now_iso())
+        price_put(conn, norm, pdate, close, "manual", cfg.now_iso())
     prices.update({k: v[0] for k, v in manual.items()})
     warnings.extend(more)
-    for code in codes:
-        if code not in prices:
-            warnings.append({"code": "missing_price", "message": f"{code} 没有价格，未计入市值与盈亏"})
-    return prices, warnings, live_at, failures
-
+    missing = [code for code in codes if code not in prices]
+    if missing:
+        preview = "、".join(missing[:5]) + ("等" if len(missing) > 5 else "")
+        warnings.append({"code": "missing_price", "message": f"{len(missing)} 只标的没有价格，未计入市值与盈亏（{preview}）"})
+    return prices, warnings, live_at, failures, manual_errors
 
 def build(conn, cfg: Config, account: str | None, as_of: date, market: str,
           manual_path: str | None) -> dict:
@@ -102,11 +117,11 @@ def build(conn, cfg: Config, account: str | None, as_of: date, market: str,
             slot["qty"] += st.quantity
             slot["cost"] += st.total_cost
 
-    if not agg:
-        raise err("no_data", "没有可报告的持仓", 1)
+    if not agg and trade_total == 0:
+        raise err("no_data", "没有可报告的持仓或交易", 1)
 
     codes = sorted(agg)
-    prices, warnings, live_at, failures = _price_map(conn, cfg, codes, as_of, market, manual_path)
+    prices, warnings, live_at, failures, manual_errors = _price_map(conn, cfg, codes, as_of, market, manual_path)
     if market == "live" and failures and not any(c in prices for c in codes):
         raise err("market_unavailable", "行情全部失败，且没有缓存价格；报告未生成（退出 4）", 4)
 
@@ -185,9 +200,19 @@ def build(conn, cfg: Config, account: str | None, as_of: date, market: str,
             continue
         seen.add(r["file"])
         sources.append({"file": r["file"], "rows": int(r["rows_read"])})
+    missing_src = conn.execute(
+        "SELECT DISTINCT a.name FROM transactions t JOIN accounts a ON a.id=t.account_id "
+        "LEFT JOIN imports i ON i.account_name=a.name AND i.file=t.source_file "
+        "WHERE i.id IS NULL"
+    ).fetchall()
+    if missing_src:
+        names = "、".join(r[0] for r in missing_src)
+        warnings.append({"code": "source_missing", "message": f"有交易记录但找不到对应 imports 记录：{names}"})
 
+    conn.commit()
     return {
         "ok": True,
+        "manualErrors": manual_errors,
         "asOf": as_of.isoformat(),
         "accounts": active_accounts,
         "instruments": len(positions),
@@ -224,7 +249,7 @@ def to_json(data: dict) -> dict:
             "interest": f"{s['interest']:.2f}",
             "fees": {k: f"{v:.2f}" for k, v in s["fees"].items()},
             "feesToTurnover": None if s["feesToTurnover"] is None else round(float(s["feesToTurnover"]), 6),
-            "xirr": s["xirr"],
+            "xirr": None if s["xirr"] is None else round(float(s["xirr"]), 6),
             "xirrReason": s["xirrReason"],
             "priced": s["priced"],
             "unpriced": s["unpriced"],
@@ -263,35 +288,48 @@ def _pct(x) -> str:
 def text_report(d: dict) -> str:
     s = d["summary"]
     lines = [
-        "持仓簿持仓报告",
+        "持仓簿 报告",
         f"数据截止 {d['asOf']} · {d['accounts']} 个账户 · {d['instruments']} 只标的 · 行情 {d['market']}",
+    ]
+    if s["unpriced"]:
+        lines.append(f"{s['unpriced']} 只标的没有价格，未计入市值与盈亏")
+    lines += [
         "",
         f"总市值 {fmt_money(s['marketValue'])}    总成本 {fmt_money(s['totalCost'])}",
-        f"浮动盈亏 {fmt_money(s['unrealizedPnl'])}（{_pct(s['unrealizedPct'])}）    已实现 {fmt_money(s['realizedPnl'])}",
-        f"分红 {fmt_money(s['dividends'])}    利息 {fmt_money(s['interest'])}    费用 {fmt_money(s['fees']['total'])}    费用/成交额 {_pct(s['feesToTurnover'])}",
-        f"XIRR {_pct(s['xirr'])}" + (f"（{s['xirrReason']}）" if s.get("xirrReason") else ""),
+        f"未实现盈亏 {fmt_money(s['unrealizedPnl'])}（{_pct(s['unrealizedPct'])}）    已实现盈亏 {fmt_money(s['realizedPnl'])}",
+        f"分红收入 {fmt_money(s['dividends'])}    费用合计 {fmt_money(s['fees']['total'])}",
+        "XIRR " + _pct(s["xirr"]) + (f"（{s['xirrReason']}）" if s.get("xirrReason") else ""),
         "",
-        "持仓",
+        "代码  名称  数量  成本价  现价  市值  占比  未实现盈亏",
     ]
     for p in d["positions"]:
         lines.append(
-            f"  {p['code']} {p['name']}  {fmt_qty(p['quantity'])} 股  成本 {fmt_money(p['avgCost'])}  "
-            f"现价 {fmt_money(p['price'])}  市值 {fmt_money(p['marketValue'])}  盈亏 {fmt_money(p['unrealizedPnl'])}"
+            f"{p['code']}  {p['name']}  {fmt_qty(p['quantity'])}  {fmt_qty(p['avgCost'])}  "
+            f"{fmt_qty(p['price'])}  {fmt_money(p['marketValue'])}  {_pct(p['weight'])}  {fmt_money(p['unrealizedPnl'])}"
         )
-    if d.get("top3") is not None:
-        lines.append(f"集中度 前3 {_pct(d['top3'])} · 前5 {_pct(d['top5'])}")
-    lines += ["", "费用", f"  佣金 {fmt_money(s['fees']['commission'])}  印花税 {fmt_money(s['fees']['stamp'])}  过户费 {fmt_money(s['fees']['transfer'])}  其他 {fmt_money(s['fees']['other'])}"]
+    f = s["fees"]
+    lines += [
+        "",
+        "费用",
+        f"  佣金 {fmt_money(f['commission'])}  印花税 {fmt_money(f['stamp'])}  过户费 {fmt_money(f['transfer'])}  其他 {fmt_money(f['other'])}",
+        f"  交易笔数 {d['tradeStats']['total']}  买入/卖出 {d['tradeStats']['buy']}/{d['tradeStats']['sell']}  费用占成交额 {_pct(s['feesToTurnover'])}",
+    ]
+    lines += ["", "数据来源"]
     if d["sources"]:
-        lines += ["", "数据来源"]
         for src in d["sources"]:
             lines.append(f"  {src['file']}（{src['rows']} 行）")
+    else:
+        lines.append("  无导入记录")
     if d["warnings"]:
         lines += ["", "提示"]
         for w in d["warnings"]:
             lines.append(f"  {w['message']}")
-    lines += ["", "公式版本 holdbook-ledger-v1。", "本报告只用于个人对账，不构成投资建议。"]
+    lines += [
+        "",
+        "本工具只做账目核对与统计，不构成投资建议；结果依赖你导入的数据是否完整。",
+        "公式版本 holdbook-ledger-v1。",
+    ]
     return "\n".join(lines) + "\n"
-
 
 CSS = """
 :root{--bg:#fff;--bg-subtle:#fafafa;--bg-muted:#f2f2f3;--border:#e6e6e8;--border-strong:#d4d4d8;--text:#18181b;--text-muted:#52525b;--text-faint:#6b6b75;--accent:#2f6f4e;--accent-weak:#e8f1ec;--pnl-up:#b42318;--pnl-down:#067647}
@@ -303,7 +341,7 @@ h1{font-size:20px;line-height:28px;font-weight:600;margin:0 0 4px}
 h2{font-size:14px;line-height:20px;font-weight:600;margin:28px 0 8px}
 .meta{color:var(--text-muted);font-size:12px;line-height:18px}
 .summary{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:20px 0 8px}
-.metric{background:var(--bg-subtle);border:1px solid var(--border);border-radius:6px;padding:12px}
+.metric{background:var(--bg-subtle);border-radius:6px;padding:12px}
 .metric .label{font-size:11px;color:var(--text-muted)}
 .metric .value{font-size:24px;line-height:32px;font-weight:600;margin-top:2px}
 .metric .sub{font-size:11px;color:var(--text-faint);margin-top:2px}
@@ -318,11 +356,13 @@ tr.total td{border-top:1px solid var(--border-strong);font-weight:600}
 .pos{color:var(--pnl-up)}.neg{color:var(--pnl-down)}
 .caption{color:var(--text-faint);font-size:12px;margin-top:6px}
 .fees{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
-.fee{border:1px solid var(--border);border-radius:6px;padding:10px}
+.fee{background:var(--bg-subtle);border-radius:6px;padding:10px}
 .fee .k{font-size:11px;color:var(--text-muted)}.fee .v{font-weight:600}
 .footer{margin-top:28px;color:var(--text-faint);font-size:11px;line-height:18px;border-top:1px solid var(--border);padding-top:12px}
 .warn{color:var(--text-muted);font-size:12px;margin-top:8px}
-@media(max-width:600px){.wrap{padding:20px 16px 36px}.summary,.secondary,.fees{grid-template-columns:repeat(2,1fr)}.metric .value{font-size:20px;line-height:28px}table,tbody,tr,td{display:block;width:100%}thead{display:none}tr{border-bottom:1px solid var(--border);padding:8px 0}td{border:0;padding:2px 0;white-space:normal}td.num{text-align:left}td[data-label]::before{content:attr(data-label) " ";color:var(--text-faint);font-size:11px}}
+@media(max-width:680px){.wrap{padding:20px 16px 36px}.summary,.secondary,.fees{grid-template-columns:repeat(2,1fr)}.metric .value{font-size:20px;line-height:28px}table,tbody,tr,td{display:block;width:100%}thead{display:none}tr{border-bottom:1px solid var(--border);padding:8px 0}td{border:0;padding:2px 0;white-space:normal}td.num{text-align:left}td[data-label]::before{content:attr(data-label) " ";color:var(--text-faint);font-size:11px}}
+@media(max-width:480px){.summary,.secondary,.fees{grid-template-columns:1fr}}
+@media print{.wrap{max-width:none;padding:0}h2{break-after:avoid}tr,td,th{break-inside:avoid}.summary,.metric,.fee{background:transparent}}
 """
 
 
@@ -335,6 +375,9 @@ def html_report(d: dict) -> str:
 
     def qv(v):
         return "—" if v is None else fmt_qty(v)
+
+    def p4(v):
+        return "—" if v is None else f"{v:.4f}"
 
     def pct(v):
         return "—" if v is None else fmt_pct(v)
@@ -360,6 +403,7 @@ def html_report(d: dict) -> str:
     top = f"前 3 大 {pct(d['top3'])} · 前 5 大 {pct(d['top5'])}" if d.get("top3") is not None else "—"
     body = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
 <title>持仓簿 {esc(d['asOf'])}</title><style>{CSS}</style></head>
 <body><main class="wrap">
 <h1>持仓簿</h1>
@@ -395,7 +439,11 @@ def atomic_write(path: Path, text: str, replace=os.replace) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        tmp.write_text(text, encoding="utf-8")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
         replace(tmp, path)
     finally:
         if tmp.exists():
